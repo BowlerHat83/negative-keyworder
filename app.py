@@ -1,57 +1,32 @@
 import streamlit as st
 import google.generativeai as genai
-import os
-from dotenv import load_dotenv
+import json
+import re
+import pandas as pd
 
-# Load environment variables
-load_dotenv()
-
-# Configure Gemini
+# -------------------------
+# CONFIG
+# -------------------------
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-
-# Load model
 model = genai.GenerativeModel("gemini-2.5-flash")
 
-# App title
 st.title("Negative Keyworder")
 
-# Inputs
-target_keywords = st.text_area(
-    "Enter Target Keywords",
-    height=150
-)
+# -------------------------
+# HELPERS
+# -------------------------
+def extract_json(text):
+    text = text.strip()
+    text = re.sub(r"```json|```", "", text)
 
-landing_page = st.text_input(
-    "Enter Landing Page URL"
-)
+    start = text.find("[")
+    end = text.rfind("]")
 
-uploaded_file = st.file_uploader(
-    "Upload Search Terms CSV",
-    type=["csv"]
-)
+    if start == -1 or end == -1:
+        raise ValueError("No JSON found")
 
-if "search_terms" not in st.session_state:
-    st.session_state.search_terms = ""
+    return json.loads(text[start:end+1])
 
-if uploaded_file is not None:
-    import pandas as pd
-
-    df = pd.read_csv(uploaded_file)
-
-    st.subheader("CSV Preview")
-    st.dataframe(df.head())
-
-    if df.empty:
-        st.error("CSV is empty")
-    else:
-        search_column = df.columns[0]
-
-        st.session_state.search_terms = "\n".join(
-            df[search_column]
-            .dropna()
-            .astype(str)
-            .tolist()
-        )
 
 def simple_cluster(terms):
     clusters = {
@@ -66,7 +41,7 @@ def simple_cluster(terms):
     for t in terms:
         t_low = t.lower()
 
-        if any(x in t_low for x in ["free", "grants", "gov", "government"]):
+        if any(x in t_low for x in ["free", "gov", "government", "grants"]):
             clusters["FREE / NON-COMMERCIAL"].append(t)
 
         elif any(x in t_low for x in ["cheap", "low cost", "affordable"]):
@@ -86,6 +61,34 @@ def simple_cluster(terms):
 
     return clusters
 
+
+# -------------------------
+# INPUTS
+# -------------------------
+target_keywords = st.text_area("Enter Target Keywords", height=150)
+landing_page = st.text_input("Enter Landing Page URL")
+
+uploaded_file = st.file_uploader("Upload Search Terms CSV", type=["csv"])
+
+if "search_terms" not in st.session_state:
+    st.session_state.search_terms = ""
+
+if uploaded_file:
+    df = pd.read_csv(uploaded_file)
+
+    st.subheader("CSV Preview")
+    st.dataframe(df.head())
+
+    if not df.empty:
+        col = df.columns[0]
+        st.session_state.search_terms = "\n".join(
+            df[col].dropna().astype(str).tolist()
+        )
+
+
+# -------------------------
+# MAIN ACTION
+# -------------------------
 if st.button("Analyse Search Terms"):
 
     if not st.session_state.search_terms.strip():
@@ -100,10 +103,7 @@ You are a Google Ads negative keyword extraction engine.
 
 Return ONLY valid JSON.
 
-Do NOT output markdown, text, or explanation.
-
-OUTPUT FORMAT MUST BE A JSON LIST:
-
+OUTPUT FORMAT:
 [
   {{
     "negative_keyword": "",
@@ -113,6 +113,11 @@ OUTPUT FORMAT MUST BE A JSON LIST:
   }}
 ]
 
+RULES:
+- Only use provided search terms
+- Do not invent keywords
+- Return valid JSON only
+
 TARGET KEYWORDS:
 {target_keywords}
 
@@ -120,48 +125,40 @@ LANDING PAGE:
 {landing_page}
 
 CLUSTERED SEARCH TERMS:
-{clusters}
+{json.dumps(clusters, indent=2)}
 """
 
     response = model.generate_content(prompt)
+    raw_output = response.text
 
-    st.subheader("AI Analysis")
-    st.text_area("Output", response.text, height=400)
+    st.subheader("AI Output")
+    st.text_area("Raw Response", raw_output, height=300)
 
     # -------------------------
-    # EXPORT SECTION (FIXED)
+    # PARSE + EXPORT
     # -------------------------
-
-    import json
-    import pandas as pd
-
     try:
-        data = json.loads(response.text)
-
+        data = extract_json(raw_output)
         df_export = pd.json_normalize(data)
 
         st.subheader("Google Ads Paste Format")
 
         if not df_export.empty:
 
-            paste_list = df_export["negative_keyword"].astype(str).tolist()
-            paste_list = list(dict.fromkeys(paste_list))  # remove duplicates
+            keywords = df_export["negative_keyword"].dropna().astype(str).tolist()
+            keywords = list(dict.fromkeys(keywords))
 
-            paste_format = "\n".join(paste_list)
+            paste = "\n".join(keywords)
 
-            st.text_area(
-                "Copy & Paste into Google Ads",
-                value=paste_format,
-                height=400
-            )
+            st.text_area("Copy & Paste into Google Ads", paste, height=300)
 
             st.download_button(
-                "Download Paste Format (.txt)",
-                data=paste_format,
-                file_name="google_ads_negative_keywords.txt",
+                "Download TXT",
+                data=paste,
+                file_name="negative_keywords.txt",
                 mime="text/plain"
             )
 
     except Exception:
-        st.error("Could not parse AI output into structured format.")
-        st.text(response.text)
+        st.error("Failed to parse AI output. Showing raw response.")
+        st.text(raw_output)
