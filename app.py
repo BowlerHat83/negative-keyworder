@@ -1,56 +1,50 @@
 import streamlit as st
 import google.generativeai as genai
 import pandas as pd
+import hashlib
+import time
 
+# -------------------------
+# CONFIG
+# -------------------------
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 model = genai.GenerativeModel("gemini-2.5-flash")
 
 st.title("Negative Keyworder")
 
-
 # -------------------------
-# CLUSTERING (optional, kept as-is)
+# STATE SAFETY LOCKS
 # -------------------------
-def simple_cluster(terms):
-    clusters = {
-        "FREE / NON-COMMERCIAL": [],
-        "CHEAP / LOW COST": [],
-        "JOB / CAREER INTENT": [],
-        "BRAND / NAVIGATIONAL": [],
-        "COMMERCIAL INTENT": [],
-        "OTHER": []
-    }
+if "last_run_hash" not in st.session_state:
+    st.session_state.last_run_hash = None
 
-    for t in terms:
-        t_low = t.lower()
+if "last_output" not in st.session_state:
+    st.session_state.last_output = ""
 
-        if any(x in t_low for x in ["free", "gov", "government", "grants"]):
-            clusters["FREE / NON-COMMERCIAL"].append(t)
-
-        elif any(x in t_low for x in ["cheap", "low cost", "affordable"]):
-            clusters["CHEAP / LOW COST"].append(t)
-
-        elif any(x in t_low for x in ["job", "career", "salary", "hiring"]):
-            clusters["JOB / CAREER INTENT"].append(t)
-
-        elif any(x in t_low for x in ["login", "portal", "facebook", "amazon"]):
-            clusters["BRAND / NAVIGATIONAL"].append(t)
-
-        elif any(x in t_low for x in ["buy", "price", "cost", "quote", "service"]):
-            clusters["COMMERCIAL INTENT"].append(t)
-
-        else:
-            clusters["OTHER"].append(t)
-
-    return clusters
+if "running" not in st.session_state:
+    st.session_state.running = False
 
 
 # -------------------------
-# HELPERS: chunking (NEW)
+# HELPERS
 # -------------------------
-def chunk_list(data, size=200):
-    for i in range(0, len(data), size):
-        yield data[i:i + size]
+def hash_input(text):
+    return hashlib.md5(text.encode()).hexdigest()
+
+
+def chunk_list(lst, size=200):
+    for i in range(0, len(lst), size):
+        yield lst[i:i + size]
+
+
+def safe_generate(prompt):
+    """Wrapper to prevent quota crash from killing app"""
+    try:
+        return model.generate_content(prompt).text.strip()
+    except Exception as e:
+        if "429" in str(e):
+            return "⚠️ Quota exceeded. Please wait or upgrade API plan."
+        return f"Error: {str(e)}"
 
 
 # -------------------------
@@ -73,25 +67,47 @@ if uploaded_file:
             df[col].dropna().astype(str).tolist()
         )
 
+# -------------------------
+# RUN BUTTON
+# -------------------------
+run = st.button("Analyse Search Terms", disabled=st.session_state.running)
 
-# -------------------------
-# MAIN ACTION
-# -------------------------
-if st.button("Analyse Search Terms"):
+if run:
+
+    if st.session_state.running:
+        st.warning("Already running. Please wait.")
+        st.stop()
 
     if not st.session_state.search_terms.strip():
         st.error("Please upload a CSV first.")
         st.stop()
 
     terms = st.session_state.search_terms.split("\n")
-    clusters = simple_cluster(terms)
 
-    all_outputs = []
+    # ---- INPUT HASH (prevents duplicate API calls)
+    input_signature = (
+        target_keywords +
+        landing_page +
+        "\n".join(terms)
+    )
+    current_hash = hash_input(input_signature)
+
+    # ---- CACHE CHECK
+    if current_hash == st.session_state.last_run_hash:
+        st.success("Using cached result (no API call).")
+        st.text_area("Copy & Paste", st.session_state.last_output, height=400)
+        st.stop()
+
+    st.session_state.running = True
+
+    st.info(f"Processing {len(terms)} terms in chunks...")
+
+    outputs = []
 
     # -------------------------
-    # BATCH PROCESSING (NEW)
+    # CHUNKED PROCESSING (CRITICAL FIX)
     # -------------------------
-    for chunk in chunk_list(terms, 200):
+    for i, chunk in enumerate(chunk_list(terms, 200)):
 
         prompt = f"""
 You are a Google Ads negative keyword generator.
@@ -109,19 +125,8 @@ RULES:
 - no JSON
 - no markdown
 - choose correct match type when needed
-
-MATCH TYPE RULES:
-- broad: default for ALL negatives (including competitor brands, generic terms, and most intents)
-- phrase: ONLY when removing word order changes meaning OR when it is a multi-word phrase that must stay intact
-- exact: ONLY for cases where broad/phrase would incorrectly block unrelated searches (very rare)
-
-IMPORTANT:
-- NEVER default to exact for safety
-- If unsure, choose BROAD
-
-BRAND HANDLING RULE:
-- competitor brands should usually be BROAD negatives (not exact)
-- only use exact match for brands if explicitly instructed or if ambiguity exists
+- NEVER default to exact unless necessary
+- competitor brands should be BROAD negatives
 
 TARGET KEYWORDS:
 {target_keywords if target_keywords.strip() else "None"}
@@ -129,30 +134,37 @@ TARGET KEYWORDS:
 LANDING PAGE:
 {landing_page}
 
-SEARCH TERMS:
+SEARCH TERMS CHUNK {i+1}:
 {chr(10).join(chunk)}
 """
 
-        response = model.generate_content(prompt)
-        all_outputs.append(response.text.strip())
+        st.write(f"Processing chunk {i+1} / {len(list(chunk_list(terms, 200)))}")
 
-    raw_output = "\n".join(all_outputs)
+        result = safe_generate(prompt)
+        outputs.append(result)
 
+        # small delay to reduce quota bursts
+        time.sleep(1.2)
+
+    raw_output = "\n".join(outputs)
+
+    # -------------------------
+    # SAVE CACHE
+    # -------------------------
+    st.session_state.last_run_hash = current_hash
+    st.session_state.last_output = raw_output
+    st.session_state.running = False
 
     # -------------------------
     # OUTPUT
     # -------------------------
     st.subheader("Google Ads Paste Format")
 
-    st.text_area(
-        "Copy & Paste",
-        raw_output,
-        height=400
-    )
+    st.text_area("Copy & Paste", raw_output, height=400)
 
     st.download_button(
         "Download TXT",
         raw_output,
-        "negative_keywords.txt",
-        "text/plain"
+        file_name="negative_keywords.txt",
+        mime="text/plain"
     )
