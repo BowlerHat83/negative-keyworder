@@ -140,17 +140,38 @@ CLUSTERED SEARCH TERMS:
     try:
         data = extract_json(raw_output)
         df_export = pd.json_normalize(data)
+        
+        st.subheader("Structured Results")
+        st.dataframe(df_export)
 
         st.subheader("Google Ads Paste Format")
 
         if not df_export.empty:
 
-            keywords = df_export["negative_keyword"].dropna().astype(str).tolist()
-            keywords = list(dict.fromkeys(keywords))
+            formatted_keywords = []
 
-            paste = "\n".join(keywords)
+            for _, row in df_export.iterrows():
 
-            st.text_area("Copy & Paste into Google Ads", paste, height=300)
+                kw = str(row["negative_keyword"]).strip()
+                match_type = str(row["match_type"]).lower().strip()
+
+                if match_type == "phrase":
+                    kw = f'"{kw}"'
+
+                elif match_type == "exact":
+                    kw = f'[{kw}]'
+
+                formatted_keywords.append(kw)
+
+            formatted_keywords = list(dict.fromkeys(formatted_keywords))
+
+            paste = "\n".join(formatted_keywords)
+
+            st.text_area(
+                "Copy & Paste into Google Ads",
+                paste,
+                height=300
+            )
 
             st.download_button(
                 "Download TXT",
