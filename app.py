@@ -1,32 +1,11 @@
 import streamlit as st
 import google.generativeai as genai
-import json
-import re
 import pandas as pd
 
-# -------------------------
-# CONFIG
-# -------------------------
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 model = genai.GenerativeModel("gemini-2.5-flash")
 
 st.title("Negative Keyworder")
-
-# -------------------------
-# HELPERS
-# -------------------------
-def extract_json(text):
-    text = text.strip()
-    text = re.sub(r"```json|```", "", text)
-
-    start = text.find("[")
-    end = text.rfind("]")
-
-    if start == -1 or end == -1:
-        raise ValueError("No JSON found")
-
-    return json.loads(text[start:end+1])
-
 
 def simple_cluster(terms):
     clusters = {
@@ -62,11 +41,8 @@ def simple_cluster(terms):
     return clusters
 
 
-# -------------------------
-# INPUTS
-# -------------------------
 target_keywords = st.text_area("Enter Target Keywords", height=150)
-landing_page = st.text_input("Enter Landing Page URL")
+landing_page = st.text_input("Landing Page URL")
 
 uploaded_file = st.file_uploader("Upload Search Terms CSV", type=["csv"])
 
@@ -76,19 +52,10 @@ if "search_terms" not in st.session_state:
 if uploaded_file:
     df = pd.read_csv(uploaded_file)
 
-    st.subheader("CSV Preview")
-    st.dataframe(df.head())
-
     if not df.empty:
         col = df.columns[0]
-        st.session_state.search_terms = "\n".join(
-            df[col].dropna().astype(str).tolist()
-        )
+        st.session_state.search_terms = "\n".join(df[col].dropna().astype(str).tolist())
 
-
-# -------------------------
-# MAIN ACTION
-# -------------------------
 if st.button("Analyse Search Terms"):
 
     if not st.session_state.search_terms.strip():
@@ -101,42 +68,40 @@ if st.button("Analyse Search Terms"):
     prompt = f"""
 You are a Google Ads negative keyword generator.
 
-Return ONLY a plain text list of negative keywords.
+Return ONLY copy-paste formatted keywords.
 
-Formatting rules:
-- Broad match = keyword
-- Phrase match = "keyword"
-- Exact match = [keyword]
+FORMAT:
+broad: keyword
+phrase: "keyword"
+exact: [keyword]
 
-Do not explain anything.
-Do not return JSON.
-Do not use markdown.
-One keyword per line only.
+RULES:
+- one per line
+- no explanation
+- no JSON
+- no markdown
+- choose correct match type when needed
 
 TARGET KEYWORDS:
-{target_keywords if target_keywords.strip() else "No target keywords provided"}
+{target_keywords if target_keywords.strip() else "None"}
 
 LANDING PAGE:
 {landing_page}
 
 SEARCH TERMS:
-{terms[:300]}
+{chr(10).join(terms[:300])}
 """
+
     response = model.generate_content(prompt)
-    raw_output = response.text
+    raw_output = response.text.strip()
 
     st.subheader("Google Ads Paste Format")
 
-    st.text_area(
-        "Copy & Paste into Google Ads",
-        raw_output,
-        height=400
-    )
+    st.text_area("Copy & Paste", raw_output, height=400)
 
     st.download_button(
         "Download TXT",
-        data=raw_output,
-        file_name="negative_keywords.txt",
-        mime="text/plain"
+        raw_output,
+        "negative_keywords.txt",
+        "text/plain"
     )
-   
