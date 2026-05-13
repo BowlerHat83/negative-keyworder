@@ -99,24 +99,19 @@ if st.button("Analyse Search Terms"):
     clusters = simple_cluster(terms)
 
     prompt = f"""
-You are a Google Ads negative keyword extraction engine.
+You are a Google Ads negative keyword generator.
 
-Return ONLY valid JSON.
+Return ONLY a plain text list of negative keywords.
 
-OUTPUT FORMAT:
-[
-  {{
-    "negative_keyword": "",
-    "match_type": "broad | phrase | exact",
-    "reason": "",
-    "affected_search_terms": []
-  }}
-]
+Formatting rules:
+- Broad match = keyword
+- Phrase match = "keyword"
+- Exact match = [keyword]
 
-RULES:
-- Only use provided search terms
-- Do not invent keywords
-- Return valid JSON only
+Do not explain anything.
+Do not return JSON.
+Do not use markdown.
+One keyword per line only.
 
 TARGET KEYWORDS:
 {target_keywords if target_keywords.strip() else "No target keywords provided"}
@@ -124,62 +119,24 @@ TARGET KEYWORDS:
 LANDING PAGE:
 {landing_page}
 
-CLUSTERED SEARCH TERMS:
-{json.dumps(clusters, indent=2)}
+SEARCH TERMS:
+{terms[:300]}
 """
-
     response = model.generate_content(prompt)
     raw_output = response.text
 
-    st.subheader("AI Output")
-    st.text_area("Raw Response", raw_output, height=300)
+    st.subheader("Google Ads Paste Format")
 
-    # -------------------------
-    # PARSE + EXPORT
-    # -------------------------
-    try:
-        data = extract_json(raw_output)
-        df_export = pd.json_normalize(data)
-        
-        st.subheader("Structured Results")
-        st.dataframe(df_export)
+    st.text_area(
+        "Copy & Paste into Google Ads",
+        raw_output,
+        height=400
+    )
 
-        st.subheader("Google Ads Paste Format")
-
-        if not df_export.empty:
-
-            formatted_keywords = []
-
-            for _, row in df_export.iterrows():
-
-                kw = str(row["negative_keyword"]).strip()
-                match_type = str(row["match_type"]).lower().strip()
-
-                if match_type == "phrase":
-                    kw = f'"{kw}"'
-
-                elif match_type == "exact":
-                    kw = f'[{kw}]'
-
-                formatted_keywords.append(kw)
-
-            formatted_keywords = list(dict.fromkeys(formatted_keywords))
-
-            paste = "\n".join(formatted_keywords)
-
-            st.text_area(
-                "Copy & Paste into Google Ads",
-                paste,
-                height=300
-            )
-
-            st.download_button(
-                "Download TXT",
-                data=paste,
-                file_name="negative_keywords.txt",
-                mime="text/plain"
-            )
-
-    except Exception:
-        st.error("Failed to parse AI output. Showing raw response.")
-        st.text(raw_output)
+    st.download_button(
+        "Download TXT",
+        data=raw_output,
+        file_name="negative_keywords.txt",
+        mime="text/plain"
+    )
+   
