@@ -119,7 +119,7 @@ RULES:
 - Return valid JSON only
 
 TARGET KEYWORDS:
-{target_keywords}
+{target_keywords if target_keywords.strip() else "No target keywords provided"}
 
 LANDING PAGE:
 {landing_page}
