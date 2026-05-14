@@ -31,7 +31,7 @@ def hash_input(text):
     return hashlib.md5(text.encode()).hexdigest()
 
 
-def chunk_list(lst, size=150):
+def chunk_list(lst, size=200):
     for i in range(0, len(lst), size):
         yield lst[i:i + size]
 
@@ -70,13 +70,12 @@ st.subheader("Campaign Context")
 campaign_type = st.selectbox(
     "Campaign Type",
     [
-        "Non-Brand Search",
-        "Brand Search",
-        "Competitor Campaign",
-        "Performance Max",
+        "Search",
         "Shopping",
-        "Lead Generation",
-        "Ecommerce"
+        "Display",
+        "Performance Max",
+        "Video",
+        "Demand Gen"
     ]
 )
 
@@ -84,15 +83,6 @@ allow_competitors = st.radio(
     "Target Competitor Searches?",
     ["Yes", "No"],
     horizontal=True
-)
-
-funnel_stage = st.selectbox(
-    "Desired Funnel Intent",
-    [
-        "High Intent Only",
-        "Mid + High Intent",
-        "All Commercial Intent"
-    ]
 )
 
 protect_keywords = st.checkbox(
@@ -201,7 +191,6 @@ if run:
         landing_page +
         campaign_type +
         allow_competitors +
-        funnel_stage +
         str(protect_keywords) +
         "\n".join(remaining_terms)
     )
@@ -274,16 +263,39 @@ MATCH TYPE RULES:
 CAMPAIGN CONTEXT:
 - Campaign Type: {campaign_type}
 - Competitor Targeting: {allow_competitors}
-- Funnel Intent: {funnel_stage}
 - Protect Core Keywords: {protect_keywords}
+
+CHANNEL-SPECIFIC RULES:
+
+SEARCH:
+- aggressively negative irrelevant intent
+- preserve high commercial intent searches
+
+SHOPPING:
+- preserve product-specific searches
+- preserve SKU/model searches
+- negative informational traffic aggressively
+
+DISPLAY:
+- negative low-quality placements and informational intent
+- allow broader audience discovery
+
+PERFORMANCE MAX:
+- preserve mixed-intent commercial searches
+- avoid over-negativing discovery traffic
+
+VIDEO:
+- negative non-relevant educational traffic
+- preserve awareness-stage commercial intent
+
+DEMAND GEN:
+- preserve mid-funnel and discovery intent
+- avoid over-restricting broader commercial audiences
 
 IMPORTANT STRATEGIC RULES:
 - If competitor targeting is enabled, avoid negativing competitor brand searches unless clearly irrelevant
 - Protect searches closely aligned with target keywords if keyword protection is enabled
-- Match negatives to the campaign strategy and funnel intent
-- High Intent campaigns should aggressively remove informational searches
-- Mid + High Intent campaigns should allow comparison and research intent where commercially relevant
-- All Commercial Intent campaigns should preserve most buying and comparison intent
+- Match negatives to the selected campaign type strategy
 
 TARGET KEYWORDS:
 {target_keywords if target_keywords.strip() else "None"}
