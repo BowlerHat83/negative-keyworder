@@ -9,16 +9,9 @@ import re
 # CONFIG
 # -------------------------
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+model = genai.GenerativeModel("gemini-2.5-flash")
 
-model = genai.GenerativeModel(
-    "gemini-2.5-flash"
-)
-
-st.set_page_config(
-    page_title="Negative Keyworder",
-    layout="wide"
-)
-
+st.set_page_config(page_title="Negative Keyworder", layout="wide")
 st.title("Negative Keyworder")
 
 # -------------------------
@@ -42,124 +35,64 @@ def hash_input(text):
 
 
 def chunk_list(lst, size=150):
-    """
-    Smaller chunks improve consistency
-    and reduce hallucinated grouping.
-    """
-
     for i in range(0, len(lst), size):
         yield lst[i:i + size]
 
 
 def normalize(term: str) -> str:
-    return re.sub(
-        r"\s+",
-        " ",
-        term.strip().lower()
-    )
+    return re.sub(r"\s+", " ", term.strip().lower())
 
 
 def clean_output_lines(lines):
-
     cleaned = []
-
     for line in lines:
-
         line = line.strip()
-
         if not line:
             continue
-
-        # remove bullets/numbers accidentally returned
-        line = re.sub(
-            r"^[\-\•\d\.\)]\s*",
-            "",
-            line
-        )
-
+        line = re.sub(r"^[\-\•\d\.\)]\s*", "", line)
         cleaned.append(line)
-
     return cleaned
 
 
 def safe_generate(prompt):
-
     try:
-
         response = model.generate_content(prompt)
-
         return response.text.strip()
-
     except Exception as e:
-
         if "429" in str(e):
             return "⚠️ Quota exceeded. Please wait or upgrade API plan."
-
         return f"Error: {str(e)}"
 
 
+# -------------------------
+# 🔥 STRONG PPC DEDUPE (RESTORED)
+# -------------------------
 def semantic_dedupe(negatives):
-    """
-    Final AI dedupe layer.
-
-    Purpose:
-    - remove redundant negatives
-    - preserve intent accuracy
-    - keep safest root negatives
-    - avoid dangerous over-generalisation
-    """
 
     prompt = f"""
-You are a senior PPC negative keyword strategist.
+You are a senior PPC account strategist.
 
-Your task:
-Semantically deduplicate this negative keyword list.
-
-GOAL:
-- remove redundant negatives
-- preserve accuracy
-- preserve intent precision
-- ONLY merge terms when intent is clearly identical
+TASK:
+Deduplicate a negative keyword list WITHOUT damaging coverage.
 
 CRITICAL RULES:
-- never over-generalise
-- do not remove a term if it protects unique intent
-- only keep the most efficient root negative
-- if uncertain, KEEP BOTH terms
+- Never over-generalise
+- Only merge if intent is IDENTICAL
+- If unsure → KEEP BOTH
+- Protect commercial intent safety first
 
-BAD EXAMPLE:
-metal
-metal conduit
-metal brackets
+MERGE ONLY WHEN SAFE:
+- "jobs", "crm jobs", "sales jobs" → jobs
+- "free crm", "crm free software" → free
 
-→ BAD because 'metal' is too broad
-
-GOOD EXAMPLE:
-jobs
-crm jobs
-sales jobs
-hiring
-
-→ GOOD because 'jobs' safely covers all
-
-GOOD EXAMPLE:
-free
-free crm
-crm free software
-
-→ GOOD because 'free' safely covers all
-
-BAD EXAMPLE:
-conduit fittings
-electrical conduit
-
-→ BAD because intent may differ
+DO NOT MERGE:
+- "metal brackets" vs "metal conduit"
+- "electrical conduit" vs "conduit fittings"
 
 OUTPUT RULES:
-- return ONLY final negative keywords
+- ONLY final keywords
 - one per line
 - no explanations
-- no bullets
 - no markdown
 
 NEGATIVES:
@@ -167,34 +100,22 @@ NEGATIVES:
 """
 
     result = safe_generate(prompt)
-
-    cleaned = clean_output_lines(
-        result.split("\n")
-    )
-
+    cleaned = clean_output_lines(result.split("\n"))
     return sorted(set(cleaned))
 
 
 # -------------------------
 # INPUTS
 # -------------------------
-target_keywords = st.text_area(
-    "Enter Target Keywords",
-    height=150
-)
+target_keywords = st.text_area("Enter Target Keywords", height=150)
+landing_page = st.text_input("Landing Page URL *")
 
-landing_page = st.text_input(
-    "Landing Page URL"
-)
-
-# -------------------------
-# CAMPAIGN CONTEXT
-# -------------------------
 st.subheader("Campaign Context")
 
 campaign_type = st.selectbox(
-    "Campaign Type",
+    "Campaign Type *",
     [
+        "Select campaign type",
         "Search",
         "Shopping",
         "Display",
@@ -214,86 +135,72 @@ allow_competitors = st.radio(
 # DYNAMIC UI
 # -------------------------
 shopping_feed = ""
-brand_protection = ""
 audience_signal = ""
 placement_exclusions = ""
 
 if campaign_type == "Shopping":
-
-    shopping_feed = st.text_input(
-        "Primary Product Category"
-    )
-
-    brand_protection = st.radio(
-        "Protect Brand Searches?",
-        ["Yes", "No"],
-        horizontal=True
-    )
+    shopping_feed = st.text_input("Primary Product Category")
 
 elif campaign_type == "Display":
+    placement_exclusions = st.text_area("Placement Exclusions / Notes")
 
-    placement_exclusions = st.text_area(
-        "Placement Exclusions / Notes"
-    )
+elif campaign_type in ["Performance Max", "Demand Gen"]:
+    audience_signal = st.text_area("Audience Signals / Interests")
 
-elif campaign_type in [
-    "Performance Max",
-    "Demand Gen"
-]:
-
-    audience_signal = st.text_area(
-        "Audience Signals / Interests"
-    )
 
 # -------------------------
 # FILE UPLOAD
 # -------------------------
-uploaded_file = st.file_uploader(
-    "Upload Search Terms CSV",
-    type=["csv"]
-)
+uploaded_file = st.file_uploader("Upload Search Terms CSV *", type=["csv"])
 
 if "search_terms" not in st.session_state:
     st.session_state.search_terms = ""
 
 if uploaded_file:
-
     df = pd.read_csv(uploaded_file)
-
-    st.success(
-        f"{len(df)} search terms uploaded"
-    )
+    st.success(f"{len(df)} search terms uploaded")
 
     if not df.empty:
-
         col = df.columns[0]
-
         st.session_state.search_terms = "\n".join(
-            df[col]
-            .dropna()
-            .astype(str)
-            .tolist()
+            df[col].dropna().astype(str).tolist()
         )
 
-# -------------------------
-# RUN BUTTON
-# -------------------------
-run = st.button(
-    "Analyse Search Terms",
-    disabled=st.session_state.running
-)
 
 # -------------------------
-# MAIN RUN
+# VALIDATION
 # -------------------------
-if run:
+def validate_inputs():
+    if not landing_page.strip():
+        st.error("Please enter a Landing Page URL.")
+        return False
+
+    if campaign_type == "Select campaign type":
+        st.error("Please select a Campaign Type.")
+        return False
+
+    if uploaded_file is None:
+        st.error("Please upload a Search Terms CSV.")
+        return False
 
     if not st.session_state.search_terms.strip():
+        st.error("CSV appears empty.")
+        return False
 
-        st.error(
-            "Please upload a CSV first."
-        )
+    return True
 
+
+# -------------------------
+# RUN
+# -------------------------
+run = st.button("Analyse Search Terms", disabled=st.session_state.running)
+
+if run:
+
+    st.session_state.running = True
+
+    if not validate_inputs():
+        st.session_state.running = False
         st.stop()
 
     # -------------------------
@@ -304,308 +211,140 @@ if run:
         for t in st.session_state.search_terms.split("\n")
         if t.strip()
     ]
-
-    # dedupe uploaded search terms
     terms = list(set(terms))
 
-    # -------------------------
-    # HARD FILTERS
-    # -------------------------
     obvious_negative_words = [
-        "jobs",
-        "job",
-        "career",
-        "careers",
-        "salary",
-        "hiring",
-        "free",
-        "cheap",
-        "login",
-        "portal",
-        "template",
-        "sample",
-        "example",
-        "reddit",
-        "youtube",
-        "pdf",
-        "guide"
+        "jobs","job","career","careers","salary",
+        "hiring","free","cheap","login","portal",
+        "template","sample","example","reddit",
+        "youtube","pdf","guide"
     ]
 
     local_negatives = set()
     remaining_terms = []
 
     for term in terms:
-
-        if any(
-            word in term
-            for word in obvious_negative_words
-        ):
-
+        if any(word in term for word in obvious_negative_words):
             local_negatives.add(term)
-
         else:
-
             remaining_terms.append(term)
 
     # -------------------------
-    # CACHE
+    # CACHE (FIXED ✔ INPUT-BASED)
     # -------------------------
     input_signature = (
-        target_keywords
-        + landing_page
-        + campaign_type
-        + allow_competitors
-        + shopping_feed
-        + brand_protection
-        + audience_signal
-        + placement_exclusions
-        + "\n".join(remaining_terms)
+        target_keywords +
+        landing_page +
+        campaign_type +
+        allow_competitors +
+        shopping_feed +
+        audience_signal +
+        placement_exclusions +
+        "\n".join(remaining_terms)
     )
 
-    current_hash = hash_input(
-        input_signature
-    )
+    current_hash = hash_input(input_signature)
 
     if current_hash == st.session_state.last_run_hash:
-
-        st.success(
-            "Using cached result (no API call)."
-        )
-
-        st.text_area(
-            "Copy & Paste",
-            st.session_state.last_output,
-            height=500
-        )
-
+        st.success("Using cached result (no API call).")
+        st.text_area("Copy & Paste", st.session_state.last_output, height=500)
         st.stop()
 
-    st.session_state.running = True
+    # -------------------------
+    # PROGRESS UI
+    # -------------------------
+    chunks = list(chunk_list(remaining_terms, 150))
+    total_chunks = max(len(chunks), 1)
 
-    st.info(f"""
-Processing:
-- {len(terms)} total terms
-- {len(local_negatives)} removed locally
-- {len(remaining_terms)} analysed by AI
-""")
+    progress_bar = st.progress(0)
+    status_text = st.empty()
 
     outputs = []
 
-    chunks = list(
-        chunk_list(
-            remaining_terms,
-            150
-        )
-    )
-
     # -------------------------
-    # AI PROCESSING
+    # 🔥 STRONG PPC PROMPT (RESTORED)
     # -------------------------
     for i, chunk in enumerate(chunks):
 
+        progress_bar.progress(int(((i + 1) / total_chunks) * 100))
+        status_text.info(f"Processing chunk {i+1} of {total_chunks}...")
+
         prompt = f"""
-You are a senior PPC search term analyst.
+You are a senior Google Ads PPC strategist.
 
-Your job is to review EVERY search term individually.
+TASK:
+Analyse search terms and return ONLY negative keywords.
 
-You must determine:
+CRITICAL RULES:
+- Protect ALL commercial intent
+- Do NOT remove terms unless clearly irrelevant
+- NEVER over-block broad discovery traffic
+- Only generalise when intent is identical
+- If unsure → DO NOT include as negative
 
-1. Is the term RELEVANT or IRRELEVANT
-2. What is the search INTENT
-3. Whether the term should become a NEGATIVE KEYWORD
-4. Whether multiple irrelevant terms can safely be compressed into ONE root negative
+NEGATIVE KEYWORD RULES:
+- Use broad match where safe
+- Use phrase only if word order matters
+- Use exact only for high precision exclusions
 
---------------------------------------------------
-IMPORTANT BEHAVIOUR RULES
---------------------------------------------------
+DO NOT:
+- Invent keywords
+- Over-generalise categories
+- Remove revenue-generating intent
 
-- Analyse EACH search term individually first
-- Do NOT immediately cluster everything
-- Relevance matters more than compression
-- Accuracy is more important than reducing keyword count
-- Only create root negatives when intent is clearly identical
-- ALL negatives must originate from provided search terms
-- NEVER invent concepts not present in the data
+CAMPAIGN TYPE:
+{campaign_type}
 
---------------------------------------------------
-ROOT NEGATIVE RULES
---------------------------------------------------
+COMPETITOR TARGETING:
+{allow_competitors}
 
-You may compress terms ONLY if:
-- the same root word appears repeatedly
-- AND the intent is clearly identical
-- AND blocking the root will not harm relevant traffic
-
-GOOD:
-"jobs", "crm jobs", "crm careers"
-→ jobs
-
-GOOD:
-"free crm", "crm free software"
-→ free
-
-BAD:
-"conduit fittings" + "electrical conduit"
-→ NOT SAFE TO MERGE
-
-BAD:
-"metal brackets" + "metal support beams"
-→ NOT SAFE TO MERGE
-
---------------------------------------------------
-CAMPAIGN CONTEXT
---------------------------------------------------
-
-Campaign Type: {campaign_type}
-
-Competitor Targeting: {allow_competitors}
-
-Shopping Feed:
-{shopping_feed}
-
-Brand Protection:
-{brand_protection}
-
-Audience Signals:
-{audience_signal}
-
-Placement Exclusions:
-{placement_exclusions}
-
---------------------------------------------------
-CAMPAIGN RULES
---------------------------------------------------
-
-SEARCH:
-- preserve commercial buying intent
-- remove irrelevant informational traffic
-
-SHOPPING:
-- preserve SKU/product searches
-- preserve model-specific intent
-- remove research traffic aggressively
-
-DISPLAY:
-- allow broader discovery intent
-- remove obvious low-quality traffic
-
-PERFORMANCE MAX:
-- preserve mixed commercial intent
-- avoid over-negativing discovery searches
-
-VIDEO:
-- preserve awareness intent
-- remove irrelevant education intent
-
-DEMAND GEN:
-- preserve mid-funnel discovery
-- avoid over-filtering
-
---------------------------------------------------
-OUTPUT RULES
---------------------------------------------------
-
-Return ONLY Google Ads negative keywords.
-
-FORMAT:
-keyword
-"keyword"
-[keyword]
-
-RULES:
-- one keyword per line
-- broad match preferred
-- phrase only when word order matters
-- exact only if precision is required
-- no explanations
-- no headings
-- no markdown
-- no numbering
-
---------------------------------------------------
-TARGET KEYWORDS
---------------------------------------------------
-
-{target_keywords or "None"}
-
---------------------------------------------------
-LANDING PAGE
---------------------------------------------------
-
-{landing_page}
-
---------------------------------------------------
-SEARCH TERMS
---------------------------------------------------
-
+SEARCH TERMS:
 {chr(10).join(chunk)}
+
+OUTPUT:
+Only negative keywords, one per line.
+No explanations.
+No formatting.
 """
 
-        st.write(
-            f"Processing chunk {i+1}/{len(chunks)}"
-        )
-
-        result = safe_generate(prompt)
-
-        if "⚠️ Quota exceeded" in result:
-
-            st.error(result)
-
-            st.session_state.running = False
-
-            st.stop()
+        with st.spinner("Analysing search intent..."):
+            result = safe_generate(prompt)
 
         outputs.append(result)
-
-        time.sleep(1)
+        time.sleep(0.1)
 
     # -------------------------
-    # FINAL MERGE
+    # MERGE
     # -------------------------
     ai_output = "\n".join(outputs)
 
-    ai_lines = clean_output_lines(
-        ai_output.split("\n")
-    )
-
-    local_lines = clean_output_lines(
-        list(local_negatives)
-    )
+    ai_lines = clean_output_lines(ai_output.split("\n"))
+    local_lines = clean_output_lines(list(local_negatives))
 
     combined = ai_lines + local_lines
 
-    # -------------------------
-    # SEMANTIC DEDUPE
-    # -------------------------
-    final_output = semantic_dedupe(
-        combined
-    )
+    final_output = semantic_dedupe(combined)
 
-    raw_output = "\n".join(
-        final_output
-    )
+    raw_output = "\n".join(final_output)
 
     # -------------------------
-    # CACHE SAVE
+    # CACHE SAVE (FIXED ✔)
     # -------------------------
     st.session_state.last_run_hash = current_hash
-
     st.session_state.last_output = raw_output
-
     st.session_state.running = False
+
+    progress_bar.empty()
+    status_text.empty()
+
+    st.success("Analysis Complete")
 
     # -------------------------
     # OUTPUT
     # -------------------------
-    st.subheader(
-        "Google Ads Paste Format"
-    )
+    st.subheader("Google Ads Paste Format")
 
-    st.text_area(
-        "Copy & Paste",
-        raw_output,
-        height=500
-    )
+    st.text_area("Copy & Paste", raw_output, height=500)
 
     st.download_button(
         "Download TXT",
