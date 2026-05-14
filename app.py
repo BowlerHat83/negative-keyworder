@@ -60,7 +60,7 @@ def safe_generate(prompt):
         return response.text.strip()
     except Exception as e:
         if "429" in str(e):
-            return "⚠️ Fuck Off. Quota exceeded. Please wait or upgrade API plan."
+            return "⚠️ Quota exceeded. Please wait or upgrade API plan."
         return f"Error: {str(e)}"
 
 
