@@ -24,7 +24,6 @@ if "last_output" not in st.session_state:
 if "running" not in st.session_state:
     st.session_state.running = False
 
-
 # -------------------------
 # HELPERS
 # -------------------------
@@ -32,37 +31,96 @@ def hash_input(text):
     return hashlib.md5(text.encode()).hexdigest()
 
 
-def chunk_list(lst, size=200):
+def chunk_list(lst, size=150):
     for i in range(0, len(lst), size):
         yield lst[i:i + size]
 
 
 def safe_generate(prompt):
     """Wrapper to prevent quota crash from killing app"""
+
     try:
         return model.generate_content(prompt).text.strip()
+
     except Exception as e:
+
         if "429" in str(e):
             return "⚠️ Quota exceeded. Please wait or upgrade API plan."
+
         return f"Error: {str(e)}"
 
 
 # -------------------------
 # INPUTS
 # -------------------------
-target_keywords = st.text_area("Enter Target Keywords", height=150)
-landing_page = st.text_input("Landing Page URL")
+target_keywords = st.text_area(
+    "Enter Target Keywords",
+    height=150
+)
 
-uploaded_file = st.file_uploader("Upload Search Terms CSV", type=["csv"])
+landing_page = st.text_input(
+    "Landing Page URL"
+)
+
+# -------------------------
+# CAMPAIGN CONTEXT
+# -------------------------
+st.subheader("Campaign Context")
+
+campaign_type = st.selectbox(
+    "Campaign Type",
+    [
+        "Non-Brand Search",
+        "Brand Search",
+        "Competitor Campaign",
+        "Performance Max",
+        "Shopping",
+        "Lead Generation",
+        "Ecommerce"
+    ]
+)
+
+allow_competitors = st.radio(
+    "Target Competitor Searches?",
+    ["Yes", "No"],
+    horizontal=True
+)
+
+funnel_stage = st.selectbox(
+    "Desired Funnel Intent",
+    [
+        "High Intent Only",
+        "Mid + High Intent",
+        "All Commercial Intent"
+    ]
+)
+
+protect_keywords = st.checkbox(
+    "Protect searches closely related to target keywords",
+    value=True
+)
+
+# -------------------------
+# FILE UPLOAD
+# -------------------------
+uploaded_file = st.file_uploader(
+    "Upload Search Terms CSV",
+    type=["csv"]
+)
 
 if "search_terms" not in st.session_state:
     st.session_state.search_terms = ""
 
 if uploaded_file:
+
     df = pd.read_csv(uploaded_file)
 
+    st.success(f"{len(df)} search terms uploaded")
+
     if not df.empty:
+
         col = df.columns[0]
+
         st.session_state.search_terms = "\n".join(
             df[col].dropna().astype(str).tolist()
         )
@@ -70,7 +128,10 @@ if uploaded_file:
 # -------------------------
 # RUN BUTTON
 # -------------------------
-run = st.button("Analyse Search Terms", disabled=st.session_state.running)
+run = st.button(
+    "Analyse Search Terms",
+    disabled=st.session_state.running
+)
 
 if run:
 
@@ -82,51 +143,147 @@ if run:
         st.error("Please upload a CSV first.")
         st.stop()
 
-    terms = st.session_state.search_terms.split("\n")
+    # -------------------------
+    # CLEAN TERMS
+    # -------------------------
+    terms = [
+        t.strip().lower()
+        for t in st.session_state.search_terms.split("\n")
+        if t.strip()
+    ]
 
-    # ---- INPUT HASH (prevents duplicate API calls)
+    # Remove duplicates
+    terms = list(set(terms))
+
+    # -------------------------
+    # LOCAL NEGATIVE FILTERING
+    # -------------------------
+    local_negatives = set()
+
+    obvious_negative_words = [
+        "jobs",
+        "job",
+        "career",
+        "careers",
+        "salary",
+        "hiring",
+        "free",
+        "cheap",
+        "login",
+        "portal",
+        "template",
+        "sample",
+        "example",
+        "reddit",
+        "youtube",
+        "pdf",
+        "guide",
+    ]
+
+    remaining_terms = []
+
+    for term in terms:
+
+        # Auto-process obvious negatives locally
+        if any(word in term for word in obvious_negative_words):
+
+            # Google Ads broad negative format
+            local_negatives.add(term)
+
+        else:
+            remaining_terms.append(term)
+
+    # -------------------------
+    # INPUT HASH
+    # -------------------------
     input_signature = (
         target_keywords +
         landing_page +
-        "\n".join(terms)
+        campaign_type +
+        allow_competitors +
+        funnel_stage +
+        str(protect_keywords) +
+        "\n".join(remaining_terms)
     )
+
     current_hash = hash_input(input_signature)
 
-    # ---- CACHE CHECK
+    # -------------------------
+    # CACHE CHECK
+    # -------------------------
     if current_hash == st.session_state.last_run_hash:
+
         st.success("Using cached result (no API call).")
-        st.text_area("Copy & Paste", st.session_state.last_output, height=400)
+
+        st.text_area(
+            "Copy & Paste",
+            st.session_state.last_output,
+            height=400
+        )
+
         st.stop()
 
     st.session_state.running = True
 
-    st.info(f"Processing {len(terms)} terms in chunks...")
+    st.info(
+        f"""
+Processing:
+- {len(terms)} uploaded terms
+- {len(local_negatives)} handled locally
+- {len(remaining_terms)} sent to Gemini
+"""
+    )
 
     outputs = []
 
+    chunks = list(chunk_list(remaining_terms, 200))
+
     # -------------------------
-    # CHUNKED PROCESSING (CRITICAL FIX)
+    # CHUNKED AI PROCESSING
     # -------------------------
-    for i, chunk in enumerate(chunk_list(terms, 200)):
+    for i, chunk in enumerate(chunks):
 
         prompt = f"""
 You are a Google Ads negative keyword generator.
 
-Return ONLY copy-paste formatted keywords.
+Return ONLY copy-paste formatted negative keywords.
 
 FORMAT:
-broad: keyword
-phrase: "keyword"
-exact: [keyword]
+keyword
+"keyword"
+[keyword]
 
 RULES:
-- one per line
-- no explanation
-- no JSON
+- one keyword per line
+- broad match = plain keyword only
+- phrase match = wrapped in quotation marks
+- exact match = wrapped in square brackets
+- no labels like broad:, phrase:, exact:
+- no explanations
 - no markdown
-- choose correct match type when needed
-- NEVER default to exact unless necessary
-- competitor brands should be BROAD negatives
+- no bullets
+- no numbering
+
+MATCH TYPE RULES:
+- broad = default for most negatives
+- competitor brands should usually be broad negatives
+- phrase = only when word order matters
+- exact = only when precision is critical
+- if unsure, use broad
+
+CAMPAIGN CONTEXT:
+- Campaign Type: {campaign_type}
+- Competitor Targeting: {allow_competitors}
+- Funnel Intent: {funnel_stage}
+- Protect Core Keywords: {protect_keywords}
+
+IMPORTANT STRATEGIC RULES:
+- If competitor targeting is enabled, avoid negativing competitor brand searches unless clearly irrelevant
+- Protect searches closely aligned with target keywords if keyword protection is enabled
+- Match negatives to the campaign strategy and funnel intent
+- High Intent campaigns should aggressively remove informational searches
+- Mid + High Intent campaigns should allow comparison and research intent where commercially relevant
+- All Commercial Intent campaigns should preserve most buying and comparison intent
 
 TARGET KEYWORDS:
 {target_keywords if target_keywords.strip() else "None"}
@@ -134,25 +291,44 @@ TARGET KEYWORDS:
 LANDING PAGE:
 {landing_page}
 
-SEARCH TERMS CHUNK {i+1}:
+SEARCH TERMS:
 {chr(10).join(chunk)}
 """
 
-        st.write(f"Processing chunk {i+1} / {len(list(chunk_list(terms, 200)))}")
+        st.write(f"Processing chunk {i+1} / {len(chunks)}")
 
         result = safe_generate(prompt)
+
         outputs.append(result)
 
-        # small delay to reduce quota bursts
+        # Small delay to reduce quota bursts
         time.sleep(1.2)
 
-    raw_output = "\n".join(outputs)
+    # -------------------------
+    # COMBINE LOCAL + AI OUTPUT
+    # -------------------------
+    ai_output = "\n".join(outputs)
+
+    local_output = "\n".join(sorted(local_negatives))
+
+    raw_output = local_output + "\n" + ai_output
+
+    # Remove accidental duplicate lines
+    raw_output = "\n".join(
+        sorted(set(
+            line.strip()
+            for line in raw_output.split("\n")
+            if line.strip()
+        ))
+    )
 
     # -------------------------
     # SAVE CACHE
     # -------------------------
     st.session_state.last_run_hash = current_hash
+
     st.session_state.last_output = raw_output
+
     st.session_state.running = False
 
     # -------------------------
@@ -160,7 +336,11 @@ SEARCH TERMS CHUNK {i+1}:
     # -------------------------
     st.subheader("Google Ads Paste Format")
 
-    st.text_area("Copy & Paste", raw_output, height=400)
+    st.text_area(
+        "Copy & Paste",
+        raw_output,
+        height=500
+    )
 
     st.download_button(
         "Download TXT",
