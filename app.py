@@ -31,7 +31,7 @@ def hash_input(text):
     return hashlib.md5(text.encode()).hexdigest()
 
 
-def chunk_list(lst, size=200):
+def chunk_list(lst, size=250):
     for i in range(0, len(lst), size):
         yield lst[i:i + size]
 
@@ -85,10 +85,7 @@ allow_competitors = st.radio(
     horizontal=True
 )
 
-protect_keywords = st.checkbox(
-    "Protect searches closely related to target keywords",
-    value=True
-)
+
 
 # -------------------------
 # FILE UPLOAD
@@ -191,7 +188,6 @@ if run:
         landing_page +
         campaign_type +
         allow_competitors +
-        str(protect_keywords) +
         "\n".join(remaining_terms)
     )
 
@@ -225,7 +221,7 @@ Processing:
 
     outputs = []
 
-    chunks = list(chunk_list(remaining_terms, 200))
+    chunks = list(chunk_list(remaining_terms, 250))
 
     # -------------------------
     # CHUNKED AI PROCESSING
@@ -263,7 +259,6 @@ MATCH TYPE RULES:
 CAMPAIGN CONTEXT:
 - Campaign Type: {campaign_type}
 - Competitor Targeting: {allow_competitors}
-- Protect Core Keywords: {protect_keywords}
 
 CHANNEL-SPECIFIC RULES:
 
@@ -294,7 +289,6 @@ DEMAND GEN:
 
 IMPORTANT STRATEGIC RULES:
 - If competitor targeting is enabled, avoid negativing competitor brand searches unless clearly irrelevant
-- Protect searches closely aligned with target keywords if keyword protection is enabled
 - Match negatives to the selected campaign type strategy
 
 TARGET KEYWORDS:
@@ -310,6 +304,10 @@ SEARCH TERMS:
         st.write(f"Processing chunk {i+1} / {len(chunks)}")
 
         result = safe_generate(prompt)
+        if "⚠️ Quota exceeded" in result:
+              st.error(result)
+              st.session_state.running = False
+              st.stop()
 
         outputs.append(result)
 
