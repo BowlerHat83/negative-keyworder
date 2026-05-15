@@ -4,6 +4,8 @@ import pandas as pd
 import hashlib
 import time
 import re
+import requests
+from bs4 import BeautifulSoup
 
 # -------------------------
 # CONFIG
@@ -11,8 +13,8 @@ import re
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 model = genai.GenerativeModel("gemini-2.5-flash")
 
-st.set_page_config(page_title="Negative Keyworder V2", layout="wide")
-st.title("Negative Keyworder V2")
+st.set_page_config(page_title="Negative Keyworder V3", layout="wide")
+st.title("Negative Keyworder V3")
 
 # -------------------------
 # STATE
@@ -22,6 +24,9 @@ if "last_run_hash" not in st.session_state:
 
 if "last_output" not in st.session_state:
     st.session_state.last_output = ""
+
+if "last_brand_analysis" not in st.session_state:
+    st.session_state.last_brand_analysis = ""
 
 if "running" not in st.session_state:
     st.session_state.running = False
@@ -45,27 +50,105 @@ def normalize(term: str) -> str:
 
 def clean_output_lines(lines):
     cleaned = []
+
     for line in lines:
         line = line.strip()
+
         if not line:
             continue
+
         line = re.sub(r"^[\-\•\d\.\)]\s*", "", line)
+
         cleaned.append(line)
+
     return cleaned
 
 
 def safe_generate(prompt):
+
     try:
         response = model.generate_content(prompt)
         return response.text.strip()
+
     except Exception as e:
+
         if "429" in str(e):
             return "⚠️ Quota exceeded. Please wait or upgrade API plan."
+
         return f"Error: {str(e)}"
 
 
 # -------------------------
-# 🔥 STRONG PPC DEDUPE (RESTORED)
+# SCRAPE LANDING PAGE
+# -------------------------
+def scrape_page_text(url):
+
+    try:
+
+        headers = {
+            "User-Agent": "Mozilla/5.0"
+        }
+
+        response = requests.get(
+            url,
+            headers=headers,
+            timeout=10
+        )
+
+        soup = BeautifulSoup(response.text, "html.parser")
+
+        for script in soup(["script", "style", "noscript"]):
+            script.extract()
+
+        text = soup.get_text(separator=" ")
+
+        text = re.sub(r"\s+", " ", text)
+
+        return text[:12000]
+
+    except Exception:
+        return ""
+
+
+# -------------------------
+# BRAND POSITIONING
+# -------------------------
+def analyse_brand_positioning(page_text):
+
+    prompt = f"""
+You are a senior PPC strategist.
+
+Analyse this landing page content.
+
+Infer:
+
+- Brand positioning
+- Pricing orientation
+- Premium vs budget
+- Enterprise vs SMB
+- Whether low-cost traffic is valuable
+- Whether educational traffic is strategically useful
+
+Return EXACTLY in this format:
+
+SUMMARY:
+<short paragraph>
+
+FLAGS:
+budget_friendly=yes/no
+premium_brand=yes/no
+enterprise_focused=yes/no
+education_friendly=yes/no
+
+LANDING PAGE CONTENT:
+{page_text}
+"""
+
+    return safe_generate(prompt)
+
+
+# -------------------------
+# 🔥 STRONG PPC DEDUPE
 # -------------------------
 def semantic_dedupe(negatives):
 
@@ -100,14 +183,20 @@ NEGATIVES:
 """
 
     result = safe_generate(prompt)
+
     cleaned = clean_output_lines(result.split("\n"))
+
     return sorted(set(cleaned))
 
 
 # -------------------------
 # INPUTS
 # -------------------------
-target_keywords = st.text_area("Enter Target Keywords", height=150)
+target_keywords = st.text_area(
+    "Enter Target Keywords",
+    height=150
+)
+
 landing_page = st.text_input("Landing Page URL *")
 
 st.subheader("Campaign Context")
@@ -139,29 +228,45 @@ audience_signal = ""
 placement_exclusions = ""
 
 if campaign_type == "Shopping":
-    shopping_feed = st.text_input("Primary Product Category")
+
+    shopping_feed = st.text_input(
+        "Primary Product Category"
+    )
 
 elif campaign_type == "Display":
-    placement_exclusions = st.text_area("Placement Exclusions / Notes")
+
+    placement_exclusions = st.text_area(
+        "Placement Exclusions / Notes"
+    )
 
 elif campaign_type in ["Performance Max", "Demand Gen"]:
-    audience_signal = st.text_area("Audience Signals / Interests")
+
+    audience_signal = st.text_area(
+        "Audience Signals / Interests"
+    )
 
 
 # -------------------------
 # FILE UPLOAD
 # -------------------------
-uploaded_file = st.file_uploader("Upload Search Terms CSV *", type=["csv"])
+uploaded_file = st.file_uploader(
+    "Upload Search Terms CSV *",
+    type=["csv"]
+)
 
 if "search_terms" not in st.session_state:
     st.session_state.search_terms = ""
 
 if uploaded_file:
+
     df = pd.read_csv(uploaded_file)
+
     st.success(f"{len(df)} search terms uploaded")
 
     if not df.empty:
+
         col = df.columns[0]
+
         st.session_state.search_terms = "\n".join(
             df[col].dropna().astype(str).tolist()
         )
@@ -171,6 +276,7 @@ if uploaded_file:
 # VALIDATION
 # -------------------------
 def validate_inputs():
+
     if not landing_page.strip():
         st.error("Please enter a Landing Page URL.")
         return False
@@ -193,15 +299,45 @@ def validate_inputs():
 # -------------------------
 # RUN
 # -------------------------
-run = st.button("Analyse Search Terms", disabled=st.session_state.running)
+run = st.button(
+    "Analyse Search Terms",
+    disabled=st.session_state.running
+)
 
 if run:
 
     st.session_state.running = True
 
     if not validate_inputs():
+
         st.session_state.running = False
         st.stop()
+
+    # -------------------------
+    # LANDING PAGE ANALYSIS
+    # -------------------------
+    with st.spinner("Analysing landing page positioning..."):
+
+        page_text = scrape_page_text(landing_page)
+
+        brand_analysis = analyse_brand_positioning(page_text)
+
+    st.subheader("Brand Positioning Analysis")
+    st.info(brand_analysis)
+
+    brand_analysis_lower = brand_analysis.lower()
+
+    premium_brand = (
+        "premium_brand=yes" in brand_analysis_lower
+    )
+
+    budget_friendly = (
+        "budget_friendly=yes" in brand_analysis_lower
+    )
+
+    education_friendly = (
+        "education_friendly=yes" in brand_analysis_lower
+    )
 
     # -------------------------
     # CLEAN TERMS
@@ -211,26 +347,71 @@ if run:
         for t in st.session_state.search_terms.split("\n")
         if t.strip()
     ]
+
     terms = list(set(terms))
 
+    # -------------------------
+    # SAFE HARD NEGATIVES
+    # -------------------------
     obvious_negative_words = [
-        "jobs","job","career","careers","salary",
-        "hiring","free","cheap","login","portal",
-        "template","sample","example","reddit",
-        "youtube","pdf","guide"
+        "jobs",
+        "job",
+        "career",
+        "careers",
+        "salary",
+        "hiring",
+        "login",
+        "portal",
+        "reddit",
+        "youtube"
     ]
+
+    # -------------------------
+    # DYNAMIC POSITIONING RULES
+    # -------------------------
+    if premium_brand:
+
+        obvious_negative_words.extend([
+            "cheap",
+            "discount",
+            "budget"
+        ])
+
+    if not education_friendly:
+
+        obvious_negative_words.extend([
+            "guide",
+            "tutorial",
+            "course",
+            "certification"
+        ])
+
+    obvious_negative_words.extend([
+        "template",
+        "sample",
+        "example"
+    ])
 
     local_negatives = set()
     remaining_terms = []
 
     for term in terms:
-        if any(word in term for word in obvious_negative_words):
+
+        if any(
+            re.search(
+                rf"\b{re.escape(word)}\b",
+                term
+            )
+            for word in obvious_negative_words
+        ):
+
             local_negatives.add(term)
+
         else:
             remaining_terms.append(term)
 
     # -------------------------
-    # CACHE (FIXED ✔ INPUT-BASED)
+    # CACHE
     # -------------------------
     input_signature = (
         target_keywords +
@@ -240,34 +421,52 @@ if run:
         shopping_feed +
         audience_signal +
         placement_exclusions +
+        brand_analysis +
         "\n".join(remaining_terms)
     )
 
     current_hash = hash_input(input_signature)
 
     if current_hash == st.session_state.last_run_hash:
+
         st.success("Using cached result (no API call).")
-        st.text_area("Copy & Paste", st.session_state.last_output, height=500)
+
+        st.subheader("Brand Positioning Analysis")
+        st.info(st.session_state.last_brand_analysis)
+
+        st.text_area(
+            "Copy & Paste",
+            st.session_state.last_output,
+            height=500
+        )
+
         st.stop()
 
     # -------------------------
     # PROGRESS UI
     # -------------------------
     chunks = list(chunk_list(remaining_terms, 150))
+
     total_chunks = max(len(chunks), 1)
 
     progress_bar = st.progress(0)
+
     status_text = st.empty()
 
     outputs = []
 
     # -------------------------
-    # 🔥 STRONG PPC PROMPT (RESTORED)
+    # AI ANALYSIS
     # -------------------------
     for i, chunk in enumerate(chunks):
 
-        progress_bar.progress(int(((i + 1) / total_chunks) * 100))
-        status_text.info(f"Processing chunk {i+1} of {total_chunks}...")
+        progress_bar.progress(
+            int(((i + 1) / total_chunks) * 100)
+        )
+
+        status_text.info(
+            f"Processing chunk {i+1} of {total_chunks}..."
+        )
 
         prompt = f"""
 You are a senior Google Ads PPC strategist.
@@ -275,22 +474,32 @@ You are a senior Google Ads PPC strategist.
 TASK:
 Analyse search terms and return ONLY negative keywords.
 
+IMPORTANT:
+The advertiser positioning is provided below.
+
+Use this context when evaluating:
+- cheap/budget intent
+- educational intent
+- competitor intent
+- research intent
+
+BRAND POSITIONING:
+{brand_analysis}
+
 CRITICAL RULES:
 - Protect ALL commercial intent
-- Do NOT remove terms unless clearly irrelevant
+- Do NOT remove valuable buying research
+- Comparison searches can be valuable
+- Budget intent may be valuable depending on positioning
+- Educational searches may be valuable depending on positioning
 - NEVER over-block broad discovery traffic
-- Only generalise when intent is identical
-- If unsure → DO NOT include as negative
+- If unsure → DO NOT include
 
-NEGATIVE KEYWORD RULES:
-- Use broad match where safe
-- Use phrase only if word order matters
-- Use exact only for high precision exclusions
-
-DO NOT:
-- Invent keywords
-- Over-generalise categories
-- Remove revenue-generating intent
+SAFE NEGATIVE TYPES:
+- jobs
+- careers
+- irrelevant support intent
+- clearly non-buying traffic
 
 CAMPAIGN TYPE:
 {campaign_type}
@@ -302,15 +511,18 @@ SEARCH TERMS:
 {chr(10).join(chunk)}
 
 OUTPUT:
-Only negative keywords, one per line.
+Only negative keywords.
+One per line.
 No explanations.
 No formatting.
 """
 
         with st.spinner("Analysing search intent..."):
+
             result = safe_generate(prompt)
 
         outputs.append(result)
+
         time.sleep(0.1)
 
     # -------------------------
@@ -318,8 +530,13 @@ No formatting.
     # -------------------------
     ai_output = "\n".join(outputs)
 
-    ai_lines = clean_output_lines(ai_output.split("\n"))
-    local_lines = clean_output_lines(list(local_negatives))
+    ai_lines = clean_output_lines(
+        ai_output.split("\n")
+    )
+
+    local_lines = clean_output_lines(
+        list(local_negatives)
+    )
 
     combined = ai_lines + local_lines
 
@@ -328,10 +545,11 @@ No formatting.
     raw_output = "\n".join(final_output)
 
     # -------------------------
-    # CACHE SAVE (FIXED ✔)
+    # CACHE SAVE
     # -------------------------
     st.session_state.last_run_hash = current_hash
     st.session_state.last_output = raw_output
+    st.session_state.last_brand_analysis = brand_analysis
     st.session_state.running = False
 
     progress_bar.empty()
@@ -344,11 +562,22 @@ No formatting.
     # -------------------------
     st.subheader("Google Ads Paste Format")
 
-    st.text_area("Copy & Paste", raw_output, height=500)
+    st.text_area(
+        "Copy & Paste",
+        raw_output,
+        height=500
+    )
 
     st.download_button(
         "Download TXT",
         raw_output,
         file_name="negative_keywords.txt",
+        mime="text/plain"
+    )
+
+    st.download_button(
+        "Download Brand Analysis",
+        brand_analysis,
+        file_name="brand_positioning.txt",
         mime="text/plain"
     )
