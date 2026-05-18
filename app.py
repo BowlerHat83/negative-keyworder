@@ -15,12 +15,14 @@ model = genai.GenerativeModel("gemini-2.5-flash")
 st.set_page_config(page_title="Negative Keyworder V3", layout="wide")
 st.title("Negative Keyworder V3")
 
-
 # -------------------------
 # STATE
 # -------------------------
 if "search_terms" not in st.session_state:
     st.session_state.search_terms = ""
+
+if "error_message" not in st.session_state:
+    st.session_state.error_message = ""
 
 
 # -------------------------
@@ -33,16 +35,16 @@ def normalize(t):
 def safe_generate(prompt):
     try:
         r = model.generate_content(prompt)
-        return r.text.strip().replace("```", "")
+        return {"ok": True, "text": r.text.strip().replace("```", "")}
     except Exception as e:
-        return f"ERROR: {str(e)}"
+        return {"ok": False, "error": str(e)}
 
 
 def extract_json(text):
     try:
         return json.loads(text)
     except:
-        match = re.search(r"\[.*\]", text, re.DOTALL)
+        match = re.search(r"\{.*\}", text, re.DOTALL)
         if match:
             try:
                 return json.loads(match.group())
@@ -94,59 +96,62 @@ PAGE:
 {page_text[:4000]}
 """
 
-    raw = safe_generate(prompt)
+    result = safe_generate(prompt)
 
-    try:
-        return json.loads(raw)
-    except:
+    if not result["ok"]:
+        return None, result["error"]
+
+    data = extract_json(result["text"])
+
+    if not data:
         return {
             "summary": "unknown",
             "positioning": "mixed",
             "core_offerings": [],
             "safe_roots": []
-        }
+        }, None
+
+    return data, None
 
 
 # -------------------------
-# LAYER 2: BATCH INTENT CLASSIFICATION (CORE OPTIMISATION)
+# LAYER 2: INTENT CLASSIFICATION
 # -------------------------
-def batch_classify_terms(terms, brand_context, target_keywords):
+def classify_term(term, brand_context, target_keywords):
 
     prompt = f"""
 You are a PPC analyst.
 
-Classify each term as:
+Return ONLY:
 NEGATIVE | POSITIVE | REVIEW
 
-RULES:
-- Default NEGATIVE unless clearly relevant
-- REVIEW = uncertain but could risk conversions
-- POSITIVE = clearly relevant
+RULE:
+- NEGATIVE = irrelevant
+- POSITIVE = relevant
+- REVIEW = uncertain
 
-Return JSON list ONLY:
+TERM:
+{term}
 
-[
-  {{"term": "...", "label": "NEGATIVE|POSITIVE|REVIEW"}}
-]
-
-BRAND CONTEXT:
+BRAND:
 {brand_context}
 
-TARGET KEYWORDS:
+TARGET:
 {target_keywords}
-
-TERMS:
-{terms}
 """
 
-    raw = safe_generate(prompt)
+    result = safe_generate(prompt)
 
-    data = extract_json(raw)
+    if not result["ok"]:
+        return None, result["error"]
 
-    if not data:
-        return []
+    text = result["text"].upper()
 
-    return data
+    if "NEGATIVE" in text:
+        return "NEGATIVE", None
+    if "POSITIVE" in text:
+        return "POSITIVE", None
+    return "REVIEW", None
 
 
 # -------------------------
@@ -161,7 +166,7 @@ def extract_roots(term, protected_roots):
 
 
 # -------------------------
-# LAYER 3.5: VARIATIONS (SAFE)
+# LAYER 3.5: VARIATIONS
 # -------------------------
 def expand_variations(negatives):
 
@@ -170,25 +175,27 @@ Expand ONLY semantic or plural variations.
 
 RULES:
 - NO invention
-- ONLY morphological or close semantic variants
+- ONLY close variants
 - one per line
-- max 2 words per line
 
 NEGATIVES:
 {negatives[:200]}
 """
 
-    raw = safe_generate(prompt)
+    result = safe_generate(prompt)
+
+    if not result["ok"]:
+        return []
 
     return [
         w.strip().lower()
-        for w in raw.split("\n")
+        for w in result["text"].split("\n")
         if w.strip()
     ][:50]
 
 
 # -------------------------
-# GOOGLE ADS FORMAT
+# FORMAT GOOGLE ADS
 # -------------------------
 def format_google_ads(terms):
     out = []
@@ -201,31 +208,17 @@ def format_google_ads(terms):
 
 
 # -------------------------
-# INPUTS (DYNAMIC UI)
+# INPUTS
 # -------------------------
+target_keywords = st.text_area("Target Keywords", height=120)
+landing_page = st.text_input("Landing Page URL")
+
 campaign_type = st.selectbox(
     "Campaign Type",
     ["Select", "Search", "Shopping", "PMax", "Display"]
 )
 
-landing_page = st.text_input("Landing Page URL")
-
 uploaded_file = st.file_uploader("Search Terms CSV", type=["csv"])
-
-
-# -------------------------
-# CONDITIONAL INPUT (KEY FIX)
-# -------------------------
-target_keywords = ""
-
-if campaign_type == "Search":
-    target_keywords = st.text_area("Target Keywords", height=120)
-
-elif campaign_type == "PMax":
-    st.info("PMax selected: Target keywords input disabled (signals derived from landing page)")
-
-else:
-    target_keywords = st.text_area("Target Keywords (optional)", height=120)
 
 
 if uploaded_file:
@@ -242,18 +235,21 @@ if uploaded_file:
 # -------------------------
 def validate():
     if campaign_type == "Select":
-        st.error("Select campaign type")
-        return False
+        return "Select campaign type"
     if not landing_page.strip():
-        st.error("Missing landing page")
-        return False
+        return "Missing landing page"
     if uploaded_file is None:
-        st.error("Missing CSV")
-        return False
+        return "Missing CSV"
     if not st.session_state.search_terms.strip():
-        st.error("Missing search terms")
-        return False
-    return True
+        return "Missing search terms"
+    return None
+
+
+# -------------------------
+# UI ERROR DISPLAY
+# -------------------------
+if st.session_state.error_message:
+    st.error(st.session_state.error_message)
 
 
 # -------------------------
@@ -261,14 +257,24 @@ def validate():
 # -------------------------
 if st.button("Analyse"):
 
-    if not validate():
+    st.session_state.error_message = ""
+
+    validation_error = validate()
+    if validation_error:
+        st.session_state.error_message = validation_error
         st.stop()
 
     with st.spinner("Scraping landing page..."):
         page_text = scrape_page(landing_page)
 
     with st.spinner("Building brand model..."):
-        brand = brand_model(page_text, target_keywords)
+        brand, err = brand_model(page_text, target_keywords)
+
+        if err:
+            st.session_state.error_message = (
+                "⚠️ Gemini quota reached or API error. Please try again later."
+            )
+            st.stop()
 
     protected_roots = set(
         normalize(w)
@@ -290,49 +296,35 @@ if st.button("Analyse"):
     ]
 
     # -------------------------
-    # LAYER 2: BATCH PROCESSING
-    # -------------------------
-    BATCH_SIZE = 30
-
-    results = []
-
-    progress = st.progress(0)
-    status = st.empty()
-
-    for i in range(0, len(terms), BATCH_SIZE):
-
-        batch = terms[i:i+BATCH_SIZE]
-
-        status.info(f"Processing batch {i//BATCH_SIZE + 1}")
-
-        batch_result = batch_classify_terms(
-            batch,
-            brand,
-            target_keywords
-        )
-
-        results.extend(batch_result)
-
-        progress.progress(min(100, int((i / len(terms)) * 100)))
-
-    # -------------------------
-    # SPLIT RESULTS
+    # BUCKETS
     # -------------------------
     search_term_negatives = []
     review_terms = []
 
-    for r in results:
-        if not isinstance(r, dict):
-            continue
+    progress = st.progress(0)
+    status = st.empty()
 
-        term = normalize(r.get("term", ""))
-        label = r.get("label", "NEGATIVE")
+    # -------------------------
+    # LAYER 2 PROCESSING
+    # -------------------------
+    for i, t in enumerate(terms):
 
-        if label == "NEGATIVE":
-            search_term_negatives.append(term)
+        progress.progress(int((i + 1) / len(terms) * 100))
+        status.info(f"Processing {i+1}/{len(terms)}")
 
-        elif label == "REVIEW":
-            review_terms.append(term)
+        decision, err = classify_term(t, brand, target_keywords)
+
+        if err:
+            st.session_state.error_message = (
+                "⚠️ Gemini quota reached or API error. Please try again later."
+            )
+            st.stop()
+
+        if decision == "NEGATIVE":
+            search_term_negatives.append(t)
+
+        elif decision == "REVIEW":
+            review_terms.append(t)
 
     # -------------------------
     # LAYER 3 ROOTS
@@ -342,11 +334,9 @@ if st.button("Analyse"):
         ai_roots.extend(extract_roots(t, protected_roots))
 
     # -------------------------
-    # LAYER 3.5 VARIATIONS (includes REVIEW for safety)
+    # LAYER 3.5 VARIATIONS
     # -------------------------
-    ai_variations = expand_variations(
-        search_term_negatives + review_terms
-    )
+    ai_variations = expand_variations(search_term_negatives)
 
     # -------------------------
     # FINAL MERGE
