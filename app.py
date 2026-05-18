@@ -13,7 +13,7 @@ genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 model = genai.GenerativeModel("gemini-2.5-flash")
 
 st.set_page_config(page_title="Negative Keyworder V3", layout="wide")
-st.title("Negative Keyworder V5 (Batch Optimised)")
+st.title("Negative Keyworder V3")
 
 
 # -------------------------
