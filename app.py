@@ -230,6 +230,7 @@ def classify_terms_batch(
         [f"- {t}" for t in batch_terms]
     )
 
+    # ✅ PATCH: now includes POSITIVE
     prompt = f"""
 You are a senior PPC analyst.
 
@@ -238,15 +239,17 @@ Return ONLY valid JSON.
 FORMAT:
 {{
   "negative": [],
-  "review": []
+  "review": [],
+  "positive": []
 }}
 
 RULES:
 - NEGATIVE = irrelevant traffic
 - REVIEW = uncertain traffic
+- POSITIVE = clearly relevant commercial intent (DO NOT include in negatives)
 - protect commercial intent
 - protect core offerings
-- default toward NEGATIVE
+- default toward NEGATIVE when unsure
 
 CAMPAIGN:
 {campaign_type}
@@ -271,17 +274,19 @@ SEARCH TERMS:
     )
 
     # -------------------------
-    # STRICT JSON VALIDATION
+    # STRICT JSON VALIDATION (PATCHED)
     # -------------------------
     if (
         not data
         or "negative" not in data
         or "review" not in data
+        or "positive" not in data   # ✅ PATCH
     ):
 
         return {
             "negative": [],
-            "review": []
+            "review": [],
+            "positive": []   # ✅ PATCH
         }, None
 
     return data, None
@@ -408,9 +413,6 @@ campaign_type = st.selectbox(
     ]
 )
 
-# -------------------------
-# LANDING PAGES
-# -------------------------
 landing_pages = ""
 
 if campaign_type == "PMax":
@@ -427,9 +429,6 @@ else:
         "Landing Page URL"
     )
 
-# -------------------------
-# TARGET KEYWORDS
-# -------------------------
 target_keywords = ""
 
 if campaign_type == "Search":
@@ -458,9 +457,6 @@ elif campaign_type == "Display":
         "Display campaigns rely heavily on contextual relevance."
     )
 
-# -------------------------
-# FILE UPLOAD
-# -------------------------
 uploaded_file = st.file_uploader(
     "Search Terms CSV",
     type=["csv"]
@@ -484,8 +480,9 @@ if uploaded_file:
         .astype(str)
     )
 
+
 # -------------------------
-# VALIDATION
+# VALIDATION (UNCHANGED LOGIC)
 # -------------------------
 def validate():
 
@@ -510,17 +507,12 @@ def validate():
     return None
 
 
-# -------------------------
-# ERROR DISPLAY
-# -------------------------
 if st.session_state.error_message:
+    st.error(st.session_state.error_message)
 
-    st.error(
-        st.session_state.error_message
-    )
 
 # -------------------------
-# RUN
+# RUN PIPELINE
 # -------------------------
 if st.button("Analyse"):
 
@@ -529,132 +521,54 @@ if st.button("Analyse"):
     validation_error = validate()
 
     if validation_error:
-
         st.session_state.error_message = validation_error
-
         st.stop()
 
-    # -------------------------
-    # SCRAPE
-    # -------------------------
     with st.spinner("Scraping landing page..."):
-
         if campaign_type == "PMax":
-
-            urls = [
-                u.strip()
-                for u in landing_pages.split("\n")
-                if u.strip()
-            ]
-
+            urls = [u.strip() for u in landing_pages.split("\n") if u.strip()]
             page_text = scrape_multiple_pages(urls)
-
         else:
+            page_text = scrape_page(landing_pages)
 
-            page_text = scrape_page(
-                landing_pages
-            )
-
-    # -------------------------
-    # BRAND MODEL
-    # -------------------------
     with st.spinner("Building brand model..."):
-
-        brand, err = brand_model(
-            page_text,
-            target_keywords,
-            campaign_type
-        )
+        brand, err = brand_model(page_text, target_keywords, campaign_type)
 
         if err:
-
-            st.session_state.error_message = (
-                "⚠️ Daily Gemini quota reached. Please try again later."
-            )
-
+            st.session_state.error_message = "⚠️ Daily Gemini quota reached. Please try again later."
             st.stop()
 
-    # -------------------------
-    # PROTECTED ROOTS
-    # -------------------------
     protected_roots = set()
 
     for w in target_keywords.split():
+        protected_roots.add(normalize(w))
 
-        protected_roots.add(
-            normalize(w)
-        )
+    for w in brand.get("safe_roots", []):
+        protected_roots.add(normalize(w))
 
-    for w in brand.get(
-        "safe_roots",
-        []
-    ):
-
-        protected_roots.add(
-            normalize(w)
-        )
-
-    # -------------------------
-    # LOAD TERMS
-    # -------------------------
     terms = sorted(set([
-
         normalize(t)
-
         for t in st.session_state.search_terms.split("\n")
-
         if t.strip()
-
     ]))
 
-    # -------------------------
-    # OUTPUT BUCKETS
-    # -------------------------
     search_term_negatives = []
     review_terms = []
+    positive_terms = []   # ✅ PATCH
 
     progress = st.progress(0)
-
     status = st.empty()
 
-    # -------------------------
-    # BATCH SETTINGS
-    # -------------------------
     BATCH_SIZE = 75
+    total_batches = math.ceil(len(terms) / BATCH_SIZE)
 
-    total_batches = math.ceil(
-        len(terms) / BATCH_SIZE
-    )
-
-    # -------------------------
-    # BATCH PROCESSING
-    # -------------------------
-    for batch_num, start in enumerate(
-
-        range(
-            0,
-            len(terms),
-            BATCH_SIZE
-        )
-
-    ):
+    for batch_num, start in enumerate(range(0, len(terms), BATCH_SIZE)):
 
         end = start + BATCH_SIZE
-
         batch = terms[start:end]
 
-        progress.progress(
-
-            int(
-                ((batch_num + 1) / total_batches)
-                * 100
-            )
-
-        )
-
-        status.info(
-            f"Processing batch {batch_num+1}/{total_batches}"
-        )
+        progress.progress(int(((batch_num + 1) / total_batches) * 100))
+        status.info(f"Processing batch {batch_num+1}/{total_batches}")
 
         result, err = classify_terms_batch(
             batch,
@@ -664,158 +578,56 @@ if st.button("Analyse"):
         )
 
         if err:
-
-            st.session_state.error_message = (
-                "⚠️ Daily Gemini quota reached. Please try again later."
-            )
-
+            st.session_state.error_message = "⚠️ Daily Gemini quota reached. Please try again later."
             st.stop()
 
-        search_term_negatives.extend(
-            result.get(
-                "negative",
-                []
-            )
-        )
+        search_term_negatives.extend(result.get("negative", []))
+        review_terms.extend(result.get("review", []))
+        positive_terms.extend(result.get("positive", []))  # ✅ PATCH
 
-        review_terms.extend(
-            result.get(
-                "review",
-                []
-            )
-        )
-
-    # -------------------------
-    # ROOTS
-    # -------------------------
     ai_roots = []
 
     for t in search_term_negatives:
+        ai_roots.extend(extract_roots(t, protected_roots))
 
-        ai_roots.extend(
+    ai_roots = dedupe_roots(ai_roots)
 
-            extract_roots(
-                t,
-                protected_roots
-            )
+    ai_variations = expand_variations(search_term_negatives)
 
-        )
+    final_raw = search_term_negatives + ai_roots + ai_variations
+    final = format_google_ads(final_raw)
 
-    # -------------------------
-    # REMOVE DUPLICATES
-    # -------------------------
-    ai_roots = dedupe_roots(
-        ai_roots
-    )
+    st.success("Analysis Complete")
 
-    # -------------------------
-    # VARIATIONS
-    # -------------------------
-    ai_variations = expand_variations(
-        search_term_negatives
-    )
-
-    # -------------------------
-    # FINAL
-    # -------------------------
-    final_raw = (
-        search_term_negatives
-        + ai_roots
-        + ai_variations
-    )
-
-    final = format_google_ads(
-        final_raw
-    )
-
-    # -------------------------
-    # OUTPUTS
-    # -------------------------
-    st.success(
-        "Analysis Complete"
-    )
-
-    st.subheader(
-        "Brand Positioning Summary"
-    )
-
+    st.subheader("Brand Positioning Summary")
     st.json(brand)
 
-    # -------------------------
-    # REVIEW QUEUE
-    # -------------------------
-    st.subheader(
-        "Review Queue (Manual Audit Required)"
-    )
+    st.subheader("Review Queue (Manual Audit Required)")
+    st.write(sorted(set(review_terms)) if review_terms else "No review terms identified")
 
-    if review_terms:
+    # ✅ PATCH: POSITIVE OUTPUT (ignored downstream)
+    st.subheader("Positive Terms (System Only - Not Used)")
+    st.write(sorted(set(positive_terms)) if positive_terms else "No positives identified")
 
-        st.write(
-            sorted(set(review_terms))
-        )
+    st.subheader("Search-Term Negatives")
+    st.write(sorted(set(search_term_negatives)))
 
-    else:
+    st.subheader("AI Root Negatives")
+    st.write(sorted(set(ai_roots)))
 
-        st.write(
-            "No review terms identified"
-        )
+    st.subheader("AI Variations")
+    st.write(sorted(set(ai_variations)))
 
-    # -------------------------
-    # SEARCH TERM NEGATIVES
-    # -------------------------
-    st.subheader(
-        "Search-Term Negatives"
-    )
-
-    st.write(
-        sorted(
-            set(search_term_negatives)
-        )
-    )
-
-    # -------------------------
-    # ROOT NEGATIVES
-    # -------------------------
-    st.subheader(
-        "AI Root Negatives"
-    )
-
-    st.write(
-        sorted(
-            set(ai_roots)
-        )
-    )
-
-    # -------------------------
-    # AI VARIATIONS
-    # -------------------------
-    st.subheader(
-        "AI Variations"
-    )
-
-    st.write(
-        sorted(
-            set(ai_variations)
-        )
-    )
-
-    # -------------------------
-    # FINAL OUTPUT
-    # -------------------------
-    st.subheader(
-        "Final Google Ads Negative List"
-    )
-
-    final_output = "\n".join(final)
+    st.subheader("Final Google Ads Negative List")
 
     st.text_area(
         "Copy & Paste",
-        final_output,
+        "\n".join(final),
         height=500
     )
 
     st.download_button(
         "Download TXT",
-        final_output,
+        "\n".join(final),
         file_name="negatives.txt"
     )
