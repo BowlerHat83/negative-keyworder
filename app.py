@@ -22,16 +22,13 @@ st.title("Negative Keyworder V3")
 # STATE
 # -------------------------
 defaults = {
-    "last_run_hash": None,
     "last_output": "",
-    "last_brand_analysis": "",
-    "running": False,
     "search_terms": ""
 }
 
-for key, value in defaults.items():
-    if key not in st.session_state:
-        st.session_state[key] = value
+for k, v in defaults.items():
+    if k not in st.session_state:
+        st.session_state[k] = v
 
 
 # -------------------------
@@ -41,16 +38,26 @@ def hash_input(text):
     return hashlib.md5(text.encode()).hexdigest()
 
 
-def normalize(term: str) -> str:
+def normalize(term):
     return re.sub(r"\s+", " ", term.strip().lower())
 
 
 def safe_generate(prompt):
     try:
-        response = model.generate_content(prompt)
-        return response.text.strip().replace("```", "")
+        res = model.generate_content(prompt)
+        return res.text.strip().replace("```", "")
     except Exception as e:
-        return f"Error: {str(e)}"
+        return f"ERROR: {str(e)}"
+
+
+def extract_json(text):
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if not match:
+        return None
+    try:
+        return json.loads(match.group())
+    except:
+        return None
 
 
 # -------------------------
@@ -58,175 +65,115 @@ def safe_generate(prompt):
 # -------------------------
 def scrape_page_text(url):
     try:
-        headers = {"User-Agent": "Mozilla/5.0"}
-        response = requests.get(url, headers=headers, timeout=10)
+        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+        soup = BeautifulSoup(r.text, "html.parser")
 
-        if response.status_code != 200:
-            return ""
+        for tag in soup(["script", "style", "noscript", "svg", "footer", "nav"]):
+            tag.extract()
 
-        soup = BeautifulSoup(response.text, "html.parser")
+        text = " ".join([
+            soup.title.get_text(" ", strip=True) if soup.title else "",
+            " ".join(p.get_text(" ", strip=True) for p in soup.find_all("p"))
+        ])
 
-        for s in soup(["script", "style", "noscript", "svg", "footer", "nav"]):
-            s.extract()
+        return re.sub(r"\s+", " ", text)[:6000]
 
-        parts = []
-
-        if soup.title:
-            parts.append(soup.title.get_text(" ", strip=True))
-
-        meta = soup.find("meta", attrs={"name": "description"})
-        if meta and meta.get("content"):
-            parts.append(meta.get("content"))
-
-        for tag in soup.find_all(["h1", "h2", "h3"]):
-            parts.append(tag.get_text(" ", strip=True))
-
-        for p in soup.find_all("p"):
-            text = p.get_text(" ", strip=True)
-            if len(text) > 40:
-                parts.append(text)
-
-        return re.sub(r"\s+", " ", " ".join(parts))[:6000]
-
-    except Exception:
+    except:
         return ""
 
 
 # -------------------------
-# BRAND POSITIONING (AUDITABLE)
+# BRAND POSITIONING (FIXED)
 # -------------------------
 def analyse_brand_positioning(page_text):
 
     prompt = f"""
-You are a PPC strategist.
-
-Return STRICT JSON ONLY.
+Return ONLY valid JSON.
 
 {{
-  "summary": "short brand summary",
+  "summary": "string",
   "positioning": "premium | budget | enterprise | mixed",
-  "tone": "formal | casual | technical | educational",
-  "primary_offering": "short description"
+  "core_product_keywords": ["keyword1", "keyword2"]
 }}
 
-CONTENT:
+RULE:
+- ONLY extract words that exist in text
+- NO invention
+
+TEXT:
 {page_text[:4000]}
 """
 
-    return safe_generate(prompt)
+    raw = safe_generate(prompt)
 
+    parsed = extract_json(raw)
 
-def parse_brand(raw):
-    try:
-        data = json.loads(raw)
-        return data
-    except Exception:
-        return {
-            "summary": "unknown",
-            "positioning": "mixed",
-            "tone": "unknown",
-            "primary_offering": "unknown"
-        }
+    if parsed:
+        return parsed
+
+    return {
+        "summary": "unknown",
+        "positioning": "mixed",
+        "core_product_keywords": []
+    }
 
 
 # -------------------------
-# GOOGLE ADS FORMAT (CLEAN)
+# GOOGLE ADS FORMAT
 # -------------------------
-def format_google_ads_negatives(terms):
-    formatted = []
+def format_google_ads(terms):
+    out = []
+
     for t in terms:
         t = t.strip()
         if not t:
             continue
 
-        # Google Ads negatives
+        # Google Ads negative formatting
         if " " in t:
-            formatted.append(f'"{t}"')
+            out.append(f'"{t}"')
         else:
-            formatted.append(t)
+            out.append(t)
 
-    return sorted(set(formatted))
-
-
-# -------------------------
-# CONTROLLED AI REASONING (NO FREE HALLUCINATION)
-# -------------------------
-def classify_term(term, brand_context, campaign_type):
-
-    prompt = f"""
-You are a Google Ads PPC analyst.
-
-You MUST follow these rules:
-
-CRITICAL RULES:
-- You can ONLY use the given search term
-- You can infer intent, but NOT invent new keywords
-- You MUST NOT generalise beyond the term
-- You MUST NOT output explanations
-- You MUST NOT output anything except KEEP or NEGATIVE
-
-DECISION RULE:
-- NEGATIVE = clearly irrelevant to commercial intent
-- KEEP = anything uncertain or commercial-adjacent
-
-TERM:
-{term}
-
-BRAND:
-{brand_context}
-
-CAMPAIGN:
-{campaign_type}
-"""
-
-    result = safe_generate(prompt).strip().upper()
-
-    return "NEGATIVE" if "NEGATIVE" in result else "KEEP"
+    return sorted(set(out))
 
 
 # -------------------------
 # INPUTS
 # -------------------------
-target_keywords = st.text_area("Enter Target Keywords", height=150)
-landing_page = st.text_input("Landing Page URL *")
+target_keywords = st.text_area("Target Keywords", height=120)
+landing_page = st.text_input("Landing Page URL")
 
 campaign_type = st.selectbox(
-    "Campaign Type *",
-    ["Select campaign type", "Search", "Shopping", "Display", "Performance Max", "Video", "Demand Gen"]
+    "Campaign Type",
+    ["Search", "Shopping", "Display", "Performance Max"]
 )
 
-uploaded_file = st.file_uploader("Upload Search Terms CSV *", type=["csv"])
+uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 
 
 if uploaded_file:
-    df = pd.read_csv(uploaded_file, encoding="utf-8", on_bad_lines="skip", engine="python")
-
-    if df.empty:
-        st.error("CSV empty")
-        st.stop()
+    df = pd.read_csv(uploaded_file, engine="python")
 
     col = st.selectbox("Select Column", df.columns)
 
     st.session_state.search_terms = "\n".join(
-        df[col].dropna().astype(str).tolist()
+        df[col].dropna().astype(str)
     )
 
 
 # -------------------------
 # VALIDATION
 # -------------------------
-def validate_inputs():
+def validate():
     if not landing_page.strip():
         st.error("Missing URL")
-        return False
-    if campaign_type == "Select campaign type":
-        st.error("Select campaign type")
         return False
     if uploaded_file is None:
         st.error("Upload CSV")
         return False
     if not st.session_state.search_terms.strip():
-        st.error("CSV empty")
+        st.error("No search terms")
         return False
     return True
 
@@ -234,21 +181,16 @@ def validate_inputs():
 # -------------------------
 # RUN
 # -------------------------
-run = st.button("Analyse Search Terms", disabled=st.session_state.running)
+if st.button("Analyse"):
 
-if run:
-
-    st.session_state.running = True
-
-    if not validate_inputs():
+    if not validate():
         st.stop()
 
     # -------------------------
     # SCRAPE + BRAND
     # -------------------------
     page_text = scrape_page_text(landing_page)
-    brand_raw = analyse_brand_positioning(page_text)
-    brand_data = parse_brand(brand_raw)
+    brand = analyse_brand_positioning(page_text)
 
     # -------------------------
     # TERMS
@@ -259,63 +201,81 @@ if run:
         if t.strip()
     ]))
 
-    hard_rules = ["jobs","job","career","careers","salary","hiring","login","portal","reddit","youtube"]
+    hard_rules = {
+        "jobs","job","career","careers","salary",
+        "hiring","login","portal","youtube","reddit"
+    }
 
-    remaining = []
-    local_negatives = set()
+    final_terms = []
 
+    # -------------------------
+    # SAFE PIPELINE (NO BLANK OUTPUTS)
+    # -------------------------
     for t in terms:
-        if any(re.search(rf"\b{w}\b", t) for w in hard_rules):
-            local_negatives.add(t)
-        else:
-            remaining.append(t)
+
+        if not t:
+            continue
+
+        # skip obvious junk
+        if any(w in t for w in hard_rules):
+            continue
+
+        # ALWAYS keep original term
+        final_terms.append(t)
+
+        # safe decomposition using brand context
+        words = t.split()
+        for w in words:
+            if len(w) > 2:
+                final_terms.append(w)
 
     # -------------------------
-    # AI LOOP (CONTROLLED)
+    # CONTROLLED AI BOOST (LIMITED HALLUCINATION)
     # -------------------------
-    ai_negatives = []
+    prompt = f"""
+Extract ONLY missing keyword variations from this list.
 
-    progress = st.progress(0)
-    status = st.empty()
+RULES:
+- ONLY use words already present
+- DO NOT invent new concepts
+- OUTPUT single words only
 
-    for i, term in enumerate(remaining):
+LIST:
+{final_terms[:200]}
+"""
 
-        progress.progress(int((i + 1) / len(remaining) * 100))
-        status.info(f"Processing {i+1} / {len(remaining)}")
+    ai_extra = safe_generate(prompt)
 
-        decision = classify_term(term, brand_raw, campaign_type)
+    ai_words = [
+        w.strip().lower()
+        for w in ai_extra.split()
+        if w.isalpha()
+    ]
 
-        if decision == "NEGATIVE":
-            ai_negatives.append(term)
+    final_terms += ai_words[:20]  # hard cap
 
-        time.sleep(0.03)
 
     # -------------------------
     # FINAL OUTPUT
     # -------------------------
-    combined = sorted(set(ai_negatives + list(local_negatives)))
-
-    output = "\n".join(format_google_ads_negatives(combined))
+    output = "\n".join(format_google_ads(final_terms))
 
 
     # -------------------------
-    # OUTPUT UI
+    # UI OUTPUT
     # -------------------------
     st.success("Analysis Complete")
 
-    st.subheader("Brand Positioning Summary (Audit)")
-    st.json(brand_data)
+    st.subheader("Brand Positioning (Audit)")
+    st.json(brand)
 
-    st.subheader("Final Negative Keywords (Google Ads Ready)")
+    st.subheader("Final Google Ads Negatives")
     st.text_area("Copy & Paste", output, height=500)
 
     st.download_button(
-        "Download TXT",
+        "Download",
         output,
-        file_name="negative_keywords.txt",
-        mime="text/plain"
+        file_name="negatives.txt"
     )
 
     st.session_state.last_output = output
-    st.session_state.last_brand_analysis = brand_raw
-    st.session_state.running = False
