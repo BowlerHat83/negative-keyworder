@@ -1,7 +1,6 @@
 import streamlit as st
 import google.generativeai as genai
 import pandas as pd
-import hashlib
 import re
 import json
 import requests
@@ -13,58 +12,55 @@ from bs4 import BeautifulSoup
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 model = genai.GenerativeModel("gemini-2.5-flash")
 
-st.set_page_config(page_title="Negative Keyworder V3", layout="wide")
-st.title("Negative Keyworder V3")
+st.set_page_config(page_title="Negative Keyworder V5 (Batch)", layout="wide")
+st.title("Negative Keyworder V5 (Batch Optimised)")
 
 
 # -------------------------
 # STATE
 # -------------------------
-defaults = {
-    "last_output": "",
-    "search_terms": ""
-}
-
-for k, v in defaults.items():
-    if k not in st.session_state:
-        st.session_state[k] = v
+if "search_terms" not in st.session_state:
+    st.session_state.search_terms = ""
 
 
 # -------------------------
 # HELPERS
 # -------------------------
-def normalize(term):
-    return re.sub(r"\s+", " ", term.strip().lower())
+def normalize(t):
+    return re.sub(r"\s+", " ", t.strip().lower())
 
 
 def safe_generate(prompt):
     try:
-        res = model.generate_content(prompt)
-        return res.text.strip().replace("```", "")
+        r = model.generate_content(prompt)
+        return r.text.strip().replace("```", "")
     except Exception as e:
         return f"ERROR: {str(e)}"
 
 
 def extract_json(text):
-    match = re.search(r"\{.*\}", text, re.DOTALL)
-    if not match:
-        return None
     try:
-        return json.loads(match.group())
+        return json.loads(text)
     except:
-        return None
+        match = re.search(r"\[.*\]", text, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group())
+            except:
+                return None
+    return None
 
 
 # -------------------------
-# SCRAPE
+# SCRAPE LANDING PAGE
 # -------------------------
-def scrape_page_text(url):
+def scrape_page(url):
     try:
         r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
         soup = BeautifulSoup(r.text, "html.parser")
 
-        for tag in soup(["script", "style", "noscript", "svg", "footer", "nav"]):
-            tag.extract()
+        for t in soup(["script", "style", "footer", "nav", "svg"]):
+            t.extract()
 
         text = " ".join([
             soup.title.get_text(" ", strip=True) if soup.title else "",
@@ -78,72 +74,117 @@ def scrape_page_text(url):
 
 
 # -------------------------
-# BRAND POSITIONING (AUDITABLE)
+# LAYER 1: BRAND INTELLIGENCE
 # -------------------------
-def analyse_brand_positioning(page_text):
+def brand_model(page_text, target_keywords):
 
     prompt = f"""
 Return ONLY valid JSON.
 
-{{
-  "summary": "string",
-  "positioning": "premium | budget | enterprise | mixed",
-  "tone": "formal | casual | technical | educational",
-  "core_keywords": ["word1", "word2"]
-}}
+Extract:
+- summary
+- positioning (premium/budget/enterprise/mixed)
+- core_offerings (list)
+- safe_roots (must NEVER be negatively targeted)
 
-IMPORTANT RULE:
-- ONLY extract words that exist in the page
-- DO NOT invent keywords
+TARGET KEYWORDS:
+{target_keywords}
 
-TEXT:
+PAGE:
 {page_text[:4000]}
 """
 
     raw = safe_generate(prompt)
+
+    try:
+        return json.loads(raw)
+    except:
+        return {
+            "summary": "unknown",
+            "positioning": "mixed",
+            "core_offerings": [],
+            "safe_roots": []
+        }
+
+
+# -------------------------
+# LAYER 2: BATCH INTENT CLASSIFICATION (CORE OPTIMISATION)
+# -------------------------
+def batch_classify_terms(terms, brand_context, target_keywords):
+
+    prompt = f"""
+You are a PPC analyst.
+
+Classify each term as:
+NEGATIVE | POSITIVE | REVIEW
+
+RULES:
+- Default NEGATIVE unless clearly relevant
+- REVIEW = uncertain but could risk conversions
+- POSITIVE = clearly relevant
+
+Return JSON list ONLY:
+
+[
+  {{"term": "...", "label": "NEGATIVE|POSITIVE|REVIEW"}}
+]
+
+BRAND CONTEXT:
+{brand_context}
+
+TARGET KEYWORDS:
+{target_keywords}
+
+TERMS:
+{terms}
+"""
+
+    raw = safe_generate(prompt)
+
     data = extract_json(raw)
 
-    return data if data else {
-        "summary": "unknown",
-        "positioning": "mixed",
-        "tone": "unknown",
-        "core_keywords": []
-    }
+    if not data:
+        return []
+
+    return data
 
 
 # -------------------------
-# ROOT PROTECTION SYSTEM
+# LAYER 3: ROOT EXTRACTION
 # -------------------------
-def build_protected_roots(search_terms, brand_data):
-    roots = set()
-
-    for t in search_terms:
-        for w in t.split():
-            roots.add(w.lower())
-
-    for w in brand_data.get("core_keywords", []):
-        roots.add(w.lower())
-
-    return roots
+def extract_roots(term, protected_roots):
+    return [
+        w.lower()
+        for w in term.split()
+        if w.lower() not in protected_roots and len(w) > 2
+    ]
 
 
 # -------------------------
-# SAFE TOKENIZATION
+# LAYER 3.5: VARIATIONS (SAFE)
 # -------------------------
-def safe_tokenize(term, protected_roots):
-    tokens = []
+def expand_variations(negatives):
 
-    for w in term.split():
-        w = w.lower().strip()
+    prompt = f"""
+Expand ONLY semantic or plural variations.
 
-        if w in protected_roots:
-            continue
-        if len(w) <= 2:
-            continue
+RULES:
+- NO invention
+- ONLY morphological or close semantic variants
+- one per line
+- max 2 words per line
 
-        tokens.append(w)
+NEGATIVES:
+{negatives[:200]}
+"""
 
-    return tokens
+    raw = safe_generate(prompt)
+
+    return [
+        w.strip().lower()
+        for w in raw.split("\n")
+        if w.strip()
+    ][:50]
 
 
 # -------------------------
@@ -151,15 +192,11 @@ def safe_tokenize(term, protected_roots):
 # -------------------------
 def format_google_ads(terms):
     out = []
-
     for t in terms:
         t = t.strip()
         if not t:
             continue
-
-        # Google Ads format (copy/paste safe)
         out.append(f'"{t}"' if " " in t else t)
-
     return sorted(set(out))
 
 
@@ -171,15 +208,15 @@ landing_page = st.text_input("Landing Page URL")
 
 campaign_type = st.selectbox(
     "Campaign Type",
-    ["Search", "Shopping", "Display", "Performance Max"]
+    ["Select", "Search", "Shopping", "PMax", "Display"]
 )
 
-uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
+uploaded_file = st.file_uploader("Search Terms CSV", type=["csv"])
 
 
 if uploaded_file:
     df = pd.read_csv(uploaded_file, engine="python")
-    col = st.selectbox("Select Column", df.columns)
+    col = st.selectbox("Column", df.columns)
 
     st.session_state.search_terms = "\n".join(
         df[col].dropna().astype(str)
@@ -190,137 +227,149 @@ if uploaded_file:
 # VALIDATION
 # -------------------------
 def validate():
+    if campaign_type == "Select":
+        st.error("Select campaign type")
+        return False
     if not landing_page.strip():
-        st.error("Missing URL")
+        st.error("Missing landing page")
         return False
     if uploaded_file is None:
-        st.error("Upload CSV")
+        st.error("Missing CSV")
         return False
     if not st.session_state.search_terms.strip():
-        st.error("No search terms")
+        st.error("Missing search terms")
         return False
     return True
 
 
 # -------------------------
-# RUN
+# RUN PIPELINE
 # -------------------------
 if st.button("Analyse"):
 
     if not validate():
         st.stop()
 
-    # -------------------------
-    # SCRAPE + BRAND
-    # -------------------------
-    page_text = scrape_page_text(landing_page)
-    brand = analyse_brand_positioning(page_text)
+    with st.spinner("Scraping landing page..."):
+        page_text = scrape_page(landing_page)
+
+    with st.spinner("Building brand model..."):
+        brand = brand_model(page_text, target_keywords)
+
+    protected_roots = set(
+        normalize(w)
+        for w in target_keywords.split()
+    )
+
+    protected_roots.update(
+        normalize(w)
+        for w in brand.get("safe_roots", [])
+    )
 
     # -------------------------
-    # TERMS
+    # LOAD TERMS
     # -------------------------
-    terms = list(set([
+    terms = [
         normalize(t)
         for t in st.session_state.search_terms.split("\n")
         if t.strip()
-    ]))
-
-    protected_roots = build_protected_roots(terms, brand)
-
-    hard_rules = {
-        "jobs","job","career","careers","salary",
-        "hiring","login","portal","youtube","reddit"
-    }
-
-    # -------------------------
-    # AUDIT TRACKING
-    # -------------------------
-    search_term_based = []
-    ai_expanded = []
-    root_filtered = []
-
-    kept_terms = []
-
-    # -------------------------
-    # STEP 1: SEARCH TERM PROCESSING
-    # -------------------------
-    for t in terms:
-
-        if any(w in t for w in hard_rules):
-            root_filtered.append(t)
-            continue
-
-        kept_terms.append(t)
-
-        tokens = safe_tokenize(t, protected_roots)
-
-        for w in tokens:
-            search_term_based.append(w)
-
-    # -------------------------
-    # STEP 2: AI EXPANSION (CONTROLLED)
-    # -------------------------
-    prompt = f"""
-Extract ONLY words that already appear in the list.
-
-RULES:
-- NO invention
-- NO synonyms
-- NO new concepts
-- ONLY exact words from input
-- one word per line
-
-LIST:
-{kept_terms[:200]}
-"""
-
-    ai_extra = safe_generate(prompt)
-
-    valid_pool = set(" ".join(kept_terms).split())
-
-    ai_words = [
-        w.strip().lower()
-        for w in ai_extra.split()
-        if w.isalpha() and w.lower() in valid_pool
     ]
 
-    ai_expanded.extend(ai_words[:25])
+    # -------------------------
+    # LAYER 2: BATCH PROCESSING
+    # -------------------------
+    BATCH_SIZE = 30
+
+    results = []
+
+    progress = st.progress(0)
+    status = st.empty()
+
+    for i in range(0, len(terms), BATCH_SIZE):
+
+        batch = terms[i:i+BATCH_SIZE]
+
+        status.info(f"Processing batch {i//BATCH_SIZE + 1}")
+
+        batch_result = batch_classify_terms(
+            batch,
+            brand,
+            target_keywords
+        )
+
+        results.extend(batch_result)
+
+        progress.progress(min(100, int((i / len(terms)) * 100)))
 
     # -------------------------
-    # FINAL MERGE (CONTROLLED)
+    # SPLIT RESULTS
     # -------------------------
-    all_terms = search_term_based + ai_expanded
+    search_term_negatives = []
+    review_terms = []
 
-    final = format_google_ads(all_terms)
+    for r in results:
+        if not isinstance(r, dict):
+            continue
+
+        term = normalize(r.get("term", ""))
+        label = r.get("label", "NEGATIVE")
+
+        if label == "NEGATIVE":
+            search_term_negatives.append(term)
+
+        elif label == "REVIEW":
+            review_terms.append(term)
 
     # -------------------------
-    # OUTPUT 1: AUDIT VIEW
+    # LAYER 3 ROOTS
     # -------------------------
-    st.subheader("Brand Audit")
+    ai_roots = []
+    for t in search_term_negatives:
+        ai_roots.extend(extract_roots(t, protected_roots))
+
+    # -------------------------
+    # LAYER 3.5 VARIATIONS (includes REVIEW for safety)
+    # -------------------------
+    ai_variations = expand_variations(
+        search_term_negatives + review_terms
+    )
+
+    # -------------------------
+    # FINAL MERGE
+    # -------------------------
+    final_raw = search_term_negatives + ai_roots + ai_variations
+    final = format_google_ads(final_raw)
+
+    # -------------------------
+    # OUTPUTS
+    # -------------------------
+    st.success("Analysis Complete")
+
+    st.subheader("Brand Positioning Summary")
     st.json(brand)
 
-    st.markdown("### Search-Term Derived Tokens")
-    st.write(sorted(set(search_term_based)))
+    st.subheader("Review Queue (Manual Audit Required)")
+    st.write(review_terms if review_terms else "No review terms identified")
 
-    st.markdown("### AI Expanded Tokens")
-    st.write(sorted(set(ai_expanded)))
+    st.subheader("Search-Term Negatives")
+    st.write(search_term_negatives)
 
-    st.markdown("### Root Filtered Terms")
-    st.write(root_filtered)
+    st.subheader("AI Root Negatives")
+    st.write(ai_roots)
 
-    # -------------------------
-    # OUTPUT 2: GOOGLE ADS READY
-    # -------------------------
-    st.subheader("Final Negative Keywords (Google Ads Ready)")
+    st.subheader("AI Variations")
+    st.write(ai_variations)
 
-    output = "\n".join(final)
+    st.subheader("Final Google Ads Negative List")
 
-    st.text_area("Copy & Paste", output, height=500)
+    st.text_area(
+        "Copy & Paste",
+        "\n".join(final),
+        height=500
+    )
 
     st.download_button(
         "Download TXT",
-        output,
+        "\n".join(final),
         file_name="negatives.txt"
     )
-
-    st.session_state.last_output = output
