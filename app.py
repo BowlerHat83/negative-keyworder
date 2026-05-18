@@ -201,17 +201,31 @@ def format_google_ads(terms):
 
 
 # -------------------------
-# INPUTS
+# INPUTS (DYNAMIC UI)
 # -------------------------
-target_keywords = st.text_area("Target Keywords", height=120)
-landing_page = st.text_input("Landing Page URL")
-
 campaign_type = st.selectbox(
     "Campaign Type",
     ["Select", "Search", "Shopping", "PMax", "Display"]
 )
 
+landing_page = st.text_input("Landing Page URL")
+
 uploaded_file = st.file_uploader("Search Terms CSV", type=["csv"])
+
+
+# -------------------------
+# CONDITIONAL INPUT (KEY FIX)
+# -------------------------
+target_keywords = ""
+
+if campaign_type == "Search":
+    target_keywords = st.text_area("Target Keywords", height=120)
+
+elif campaign_type == "PMax":
+    st.info("PMax selected: Target keywords input disabled (signals derived from landing page)")
+
+else:
+    target_keywords = st.text_area("Target Keywords (optional)", height=120)
 
 
 if uploaded_file:
