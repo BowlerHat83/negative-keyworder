@@ -12,14 +12,9 @@ from bs4 import BeautifulSoup
 # CONFIG
 # -------------------------
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-
 model = genai.GenerativeModel("gemini-2.5-flash")
 
-st.set_page_config(
-    page_title="Negative Keyworder V3",
-    layout="wide"
-)
-
+st.set_page_config(page_title="Negative Keyworder V3", layout="wide")
 st.title("Negative Keyworder V3")
 
 # -------------------------
@@ -37,6 +32,7 @@ for key, value in defaults.items():
     if key not in st.session_state:
         st.session_state[key] = value
 
+
 # -------------------------
 # HELPERS
 # -------------------------
@@ -44,158 +40,24 @@ def hash_input(text):
     return hashlib.md5(text.encode()).hexdigest()
 
 
-def chunk_list(lst, size=150):
-    for i in range(0, len(lst), size):
-        yield lst[i:i + size]
-
-
 def normalize(term: str) -> str:
     return re.sub(r"\s+", " ", term.strip().lower())
 
 
-def clean_output_lines(lines):
-    cleaned = []
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-        line = re.sub(r"^[\-\•\d\.\)]\s*", "", line)
-        cleaned.append(line)
-    return cleaned
-
-
-# -------------------------
-# OPTION 1: REPLACED safe_generate()
-# -------------------------
-def safe_generate(prompt, retries=3, delay=2):
-    for attempt in range(retries):
-        try:
-            response = model.generate_content(prompt)
-            text = response.text.strip()
-            return text.replace("```", "").strip()
-
-        except Exception as e:
-            if "429" in str(e):
-                time.sleep(delay * (attempt + 1))
-                continue
-            return f"Error: {str(e)}"
-
-    return "⚠️ Failed after retries."
-
-
-# -------------------------
-# GOOGLE ADS FORMATTING
-# -------------------------
-def format_google_ads_negatives(terms):
-    formatted = []
-
-    for t in terms:
-        t = t.strip()
-        if not t:
-            continue
-
-        # phrase match formatting
-        if " " in t:
-            formatted.append(f'-"{t}"')
-        else:
-            formatted.append(f"-{t}")
-
-    return sorted(set(formatted))
-
-
-# -------------------------
-# SEMANTIC DEDUPE
-# -------------------------
-def semantic_dedupe(negatives):
-    prompt = f"""
-You are a senior PPC account strategist.
-
-TASK:
-Deduplicate a negative keyword list WITHOUT damaging coverage.
-
-CRITICAL RULES:
-- Never over-generalise
-- Only merge if intent is IDENTICAL
-- If unsure → KEEP BOTH
-- Protect commercial intent safety first
-
-MERGE ONLY WHEN SAFE:
-- "jobs", "crm jobs", "sales jobs" → jobs
-- "free crm", "crm free software" → free
-
-DO NOT MERGE:
-- "metal brackets" vs "metal conduit"
-- "electrical conduit" vs "conduit fittings"
-
-OUTPUT RULES:
-- ONLY final keywords
-- one per line
-- no explanations
-- no markdown
-
-NEGATIVES:
-{chr(10).join(negatives)}
-"""
-
-    result = safe_generate(prompt)
-    cleaned = clean_output_lines(result.split("\n"))
-    return sorted(set(cleaned))
-
-
-# -------------------------
-# SCRAPE LANDING PAGE
-# -------------------------
-def scrape_page_text(url):
+def safe_generate(prompt):
     try:
-        headers = {"User-Agent": "Mozilla/5.0"}
-        response = requests.get(url, headers=headers, timeout=10, allow_redirects=True)
-
-        if response.status_code != 200:
-            return ""
-
-        soup = BeautifulSoup(response.text, "html.parser")
-
-        for s in soup(["script", "style", "noscript", "svg", "footer", "nav"]):
-            s.extract()
-
-        content_parts = []
-
-        if soup.title:
-            content_parts.append(soup.title.get_text(" ", strip=True))
-
-        meta = soup.find("meta", attrs={"name": "description"})
-        if meta and meta.get("content"):
-            content_parts.append(meta.get("content"))
-
-        for tag in soup.find_all(["h1", "h2", "h3"]):
-            text = tag.get_text(" ", strip=True)
-            if text:
-                content_parts.append(text)
-
-        for p in soup.find_all("p"):
-            text = p.get_text(" ", strip=True)
-            if len(text) > 40:
-                content_parts.append(text)
-
-        combined = " ".join(content_parts)
-        combined = re.sub(r"\s+", " ", combined)
-
-        return combined[:6000]
-
-    except Exception:
-        return ""
+        response = model.generate_content(prompt)
+        return response.text.strip().replace("```", "")
+    except Exception as e:
+        return f"Error: {str(e)}"
 
 
 # -------------------------
-# BRAND POSITIONING
+# BRAND ANALYSIS (SAFE - STILL OK AS IT DOES NOT GENERATE KEYWORDS)
 # -------------------------
 def analyse_brand_positioning(page_text):
     prompt = f"""
-You are a PPC strategist.
-
-Analyse the landing page positioning.
-
-Return STRICT VALID JSON ONLY.
+Return STRICT JSON ONLY:
 
 {{
   "summary": "short brand summary",
@@ -208,24 +70,106 @@ Return STRICT VALID JSON ONLY.
 CONTENT:
 {page_text[:4000]}
 """
-
-    result = safe_generate(prompt)
-    result = result.replace("```json", "").replace("```", "")
-    return result.strip()
+    return safe_generate(prompt)
 
 
 def parse_brand(json_text):
     try:
         data = json.loads(json_text)
-
         return {
             "premium": str(data.get("premium_brand", "no")).lower() == "yes",
             "budget": str(data.get("budget_friendly", "no")).lower() == "yes",
             "education": str(data.get("education_friendly", "no")).lower() == "yes",
         }
-
     except Exception:
         return {"premium": False, "budget": False, "education": False}
+
+
+# -------------------------
+# SCRAPE
+# -------------------------
+def scrape_page_text(url):
+    try:
+        headers = {"User-Agent": "Mozilla/5.0"}
+        response = requests.get(url, headers=headers, timeout=10)
+
+        if response.status_code != 200:
+            return ""
+
+        soup = BeautifulSoup(response.text, "html.parser")
+
+        for s in soup(["script", "style", "noscript", "svg", "footer", "nav"]):
+            s.extract()
+
+        parts = []
+
+        if soup.title:
+            parts.append(soup.title.get_text(" ", strip=True))
+
+        meta = soup.find("meta", attrs={"name": "description"})
+        if meta and meta.get("content"):
+            parts.append(meta.get("content"))
+
+        for tag in soup.find_all(["h1", "h2", "h3"]):
+            parts.append(tag.get_text(" ", strip=True))
+
+        for p in soup.find_all("p"):
+            text = p.get_text(" ", strip=True)
+            if len(text) > 40:
+                parts.append(text)
+
+        return re.sub(r"\s+", " ", " ".join(parts))[:6000]
+
+    except Exception:
+        return ""
+
+
+# -------------------------
+# NO HALLUCINATION CLASSIFIER (CORE CHANGE)
+# -------------------------
+def classify_term(term, brand_context, campaign_type):
+    prompt = f"""
+You are a STRICT Google Ads keyword classifier.
+
+CRITICAL RULES:
+- You MUST ONLY evaluate the given term
+- You MUST NOT invent or suggest new keywords
+- You MUST NOT generalise
+- You MUST NOT rephrase
+- Output ONLY ONE WORD: KEEP or NEGATIVE
+
+TERM:
+{term}
+
+BRAND:
+{brand_context}
+
+CAMPAIGN:
+{campaign_type}
+"""
+    result = safe_generate(prompt).strip().upper()
+
+    if "NEGATIVE" in result:
+        return "NEGATIVE"
+    return "KEEP"
+
+
+# -------------------------
+# GOOGLE ADS FORMAT
+# -------------------------
+def format_google_ads_negatives(terms):
+    formatted = []
+    for t in terms:
+        t = t.strip()
+        if not t:
+            continue
+
+        if " " in t:
+            formatted.append(f'-"{t}"')
+        else:
+            formatted.append(f"-{t}")
+
+    return sorted(set(formatted))
 
 
 # -------------------------
@@ -239,25 +183,20 @@ campaign_type = st.selectbox(
     ["Select campaign type", "Search", "Shopping", "Display", "Performance Max", "Video", "Demand Gen"]
 )
 
-allow_competitors = st.radio("Target Competitor Searches?", ["Yes", "No"], horizontal=True)
-
-
 uploaded_file = st.file_uploader("Upload Search Terms CSV *", type=["csv"])
-selected_column = None
+
 
 if uploaded_file:
     df = pd.read_csv(uploaded_file, encoding="utf-8", on_bad_lines="skip", engine="python")
 
     if df.empty:
-        st.error("CSV appears empty.")
+        st.error("CSV empty")
         st.stop()
 
-    st.success(f"{len(df)} rows uploaded")
-
-    selected_column = st.selectbox("Select Search Term Column", df.columns)
+    col = st.selectbox("Select Column", df.columns)
 
     st.session_state.search_terms = "\n".join(
-        df[selected_column].dropna().astype(str).tolist()
+        df[col].dropna().astype(str).tolist()
     )
 
 
@@ -266,21 +205,17 @@ if uploaded_file:
 # -------------------------
 def validate_inputs():
     if not landing_page.strip():
-        st.error("Please enter a Landing Page URL.")
+        st.error("Missing URL")
         return False
-
     if campaign_type == "Select campaign type":
-        st.error("Please select a Campaign Type.")
+        st.error("Select campaign type")
         return False
-
     if uploaded_file is None:
-        st.error("Please upload a Search Terms CSV.")
+        st.error("Upload CSV")
         return False
-
     if not st.session_state.search_terms.strip():
-        st.error("CSV appears empty.")
+        st.error("CSV empty")
         return False
-
     return True
 
 
@@ -294,28 +229,20 @@ if run:
     st.session_state.running = True
 
     if not validate_inputs():
-        st.session_state.running = False
         st.stop()
 
     # -------------------------
-    # SCRAPE PAGE
+    # SCRAPE
     # -------------------------
-    with st.spinner("Analysing landing page..."):
-        page_text = scrape_page_text(landing_page)
-
-    if not page_text:
-        st.warning("Could not fully scrape landing page.")
+    page_text = scrape_page_text(landing_page)
 
     # -------------------------
-    # BRAND ANALYSIS
+    # BRAND
     # -------------------------
-    with st.spinner("Analysing brand positioning..."):
-        brand_analysis_raw = analyse_brand_positioning(page_text)
-
-    brand_flags = parse_brand(brand_analysis_raw)
+    brand_raw = analyse_brand_positioning(page_text)
 
     # -------------------------
-    # CLEAN TERMS
+    # TERMS
     # -------------------------
     terms = list(set([
         normalize(t)
@@ -323,121 +250,66 @@ if run:
         if t.strip()
     ]))
 
-    hard_rules = [
-        "jobs","job","career","careers","salary","hiring",
-        "login","portal","reddit","youtube"
-    ]
+    # -------------------------
+    # HARD RULES (SAFE FILTER)
+    # -------------------------
+    hard_rules = ["jobs","job","career","careers","salary","hiring","login","portal","reddit","youtube"]
 
-    contextual = []
-    if brand_flags["premium"]:
-        contextual += ["cheap","budget","discount"]
-    if not brand_flags["education"]:
-        contextual += ["course","tutorial"]
-
-    local_negatives = set()
     remaining = []
+    local_negatives = set()
 
     for t in terms:
-        if any(re.search(rf"\b{w}\b", t) for w in hard_rules + contextual):
+        if any(re.search(rf"\b{w}\b", t) for w in hard_rules):
             local_negatives.add(t)
         else:
             remaining.append(t)
 
     # -------------------------
-    # CACHE
+    # AI CLASSIFICATION LOOP (NO HALLUCINATION)
     # -------------------------
-    input_signature = (
-        target_keywords +
-        landing_page +
-        campaign_type +
-        allow_competitors +
-        brand_analysis_raw +
-        "\n".join(remaining)
-    )
+    ai_negatives = []
 
-    current_hash = hash_input(input_signature)
+    progress = st.progress(0)
+    status = st.empty()
 
-    if current_hash == st.session_state.last_run_hash:
-        st.success("Using cached result (no API call).")
-        st.text_area("Copy & Paste", st.session_state.last_output, height=500)
-        st.stop()
+    for i, term in enumerate(remaining):
 
-    # -------------------------
-    # CHUNKS
-    # -------------------------
-    chunks = list(chunk_list(remaining, 150))
-    outputs = []
+        progress.progress(int((i + 1) / len(remaining) * 100))
+        status.info(f"Classifying {i+1} of {len(remaining)}")
 
-    progress_bar = st.progress(0)
-    status_text = st.empty()
+        decision = classify_term(term, brand_raw, campaign_type)
+
+        if decision == "NEGATIVE":
+            ai_negatives.append(term)
+
+        time.sleep(0.05)
 
     # -------------------------
-    # AI LOOP
+    # MERGE (ALL FROM INPUT ONLY)
     # -------------------------
-    for i, chunk in enumerate(chunks):
+    combined = ai_negatives + list(local_negatives)
 
-        progress_bar.progress(int(((i + 1) / len(chunks)) * 100))
-        status_text.info(f"Processing chunk {i+1} of {len(chunks)}...")
-
-        prompt = f"""
-You are a senior Google Ads PPC strategist.
-
-TASK:
-Return ONLY negative keywords.
-
-BRAND CONTEXT:
-{brand_analysis_raw}
-
-CAMPAIGN TYPE:
-{campaign_type}
-
-SEARCH TERMS:
-{chr(10).join(chunk)}
-"""
-
-        result = safe_generate(prompt)
-        outputs.append(result)
-        time.sleep(0.1)
+    # NO AI GENERATION HERE ANYMORE
+    final = sorted(set(combined))
 
     # -------------------------
-    # MERGE
-    # -------------------------
-    ai_output = "\n".join(outputs)
-    ai_lines = clean_output_lines(ai_output.split("\n"))
-
-    combined = ai_lines + list(local_negatives)
-
-    final = semantic_dedupe(combined)
-
-    # -------------------------
-    # GOOGLE ADS FORMAT (NEW)
+    # OUTPUT FORMAT
     # -------------------------
     output = "\n".join(format_google_ads_negatives(final))
-
-    # -------------------------
-    # SAVE
-    # -------------------------
-    st.session_state.last_run_hash = current_hash
-    st.session_state.last_output = output
-    st.session_state.running = False
-
-    progress_bar.empty()
-    status_text.empty()
 
     # -------------------------
     # OUTPUT
     # -------------------------
     st.success("Analysis Complete")
 
-    st.subheader("Final Negatives (Google Ads Format)")
+    st.subheader("Final Negatives (NO HALLUCINATION MODE)")
     st.text_area("Copy & Paste", output, height=500)
 
     st.download_button(
         "Download TXT",
         output,
-        file_name="google_ads_negative_keywords.txt",
+        file_name="negative_keywords.txt",
         mime="text/plain"
     )
 
-    with st.expander("Brand Debug"):
-        st.text(brand_analysis_raw)
+    st.session_state.last_output = output
