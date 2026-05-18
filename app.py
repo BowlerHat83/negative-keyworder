@@ -17,6 +17,7 @@ model = genai.GenerativeModel("gemini-2.5-flash")
 st.set_page_config(page_title="Negative Keyworder V3", layout="wide")
 st.title("Negative Keyworder V3")
 
+
 # -------------------------
 # STATE
 # -------------------------
@@ -50,39 +51,6 @@ def safe_generate(prompt):
         return response.text.strip().replace("```", "")
     except Exception as e:
         return f"Error: {str(e)}"
-
-
-# -------------------------
-# BRAND ANALYSIS (SAFE - STILL OK AS IT DOES NOT GENERATE KEYWORDS)
-# -------------------------
-def analyse_brand_positioning(page_text):
-    prompt = f"""
-Return STRICT JSON ONLY:
-
-{{
-  "summary": "short brand summary",
-  "premium_brand": "yes",
-  "budget_friendly": "no",
-  "enterprise_focused": "yes",
-  "education_friendly": "no"
-}}
-
-CONTENT:
-{page_text[:4000]}
-"""
-    return safe_generate(prompt)
-
-
-def parse_brand(json_text):
-    try:
-        data = json.loads(json_text)
-        return {
-            "premium": str(data.get("premium_brand", "no")).lower() == "yes",
-            "budget": str(data.get("budget_friendly", "no")).lower() == "yes",
-            "education": str(data.get("education_friendly", "no")).lower() == "yes",
-        }
-    except Exception:
-        return {"premium": False, "budget": False, "education": False}
 
 
 # -------------------------
@@ -125,18 +93,81 @@ def scrape_page_text(url):
 
 
 # -------------------------
-# NO HALLUCINATION CLASSIFIER (CORE CHANGE)
+# BRAND POSITIONING (AUDITABLE)
+# -------------------------
+def analyse_brand_positioning(page_text):
+
+    prompt = f"""
+You are a PPC strategist.
+
+Return STRICT JSON ONLY.
+
+{{
+  "summary": "short brand summary",
+  "positioning": "premium | budget | enterprise | mixed",
+  "tone": "formal | casual | technical | educational",
+  "primary_offering": "short description"
+}}
+
+CONTENT:
+{page_text[:4000]}
+"""
+
+    return safe_generate(prompt)
+
+
+def parse_brand(raw):
+    try:
+        data = json.loads(raw)
+        return data
+    except Exception:
+        return {
+            "summary": "unknown",
+            "positioning": "mixed",
+            "tone": "unknown",
+            "primary_offering": "unknown"
+        }
+
+
+# -------------------------
+# GOOGLE ADS FORMAT (CLEAN)
+# -------------------------
+def format_google_ads_negatives(terms):
+    formatted = []
+    for t in terms:
+        t = t.strip()
+        if not t:
+            continue
+
+        # Google Ads negatives
+        if " " in t:
+            formatted.append(f'"{t}"')
+        else:
+            formatted.append(t)
+
+    return sorted(set(formatted))
+
+
+# -------------------------
+# CONTROLLED AI REASONING (NO FREE HALLUCINATION)
 # -------------------------
 def classify_term(term, brand_context, campaign_type):
+
     prompt = f"""
-You are a STRICT Google Ads keyword classifier.
+You are a Google Ads PPC analyst.
+
+You MUST follow these rules:
 
 CRITICAL RULES:
-- You MUST ONLY evaluate the given term
-- You MUST NOT invent or suggest new keywords
-- You MUST NOT generalise
-- You MUST NOT rephrase
-- Output ONLY ONE WORD: KEEP or NEGATIVE
+- You can ONLY use the given search term
+- You can infer intent, but NOT invent new keywords
+- You MUST NOT generalise beyond the term
+- You MUST NOT output explanations
+- You MUST NOT output anything except KEEP or NEGATIVE
+
+DECISION RULE:
+- NEGATIVE = clearly irrelevant to commercial intent
+- KEEP = anything uncertain or commercial-adjacent
 
 TERM:
 {term}
@@ -147,29 +178,10 @@ BRAND:
 CAMPAIGN:
 {campaign_type}
 """
+
     result = safe_generate(prompt).strip().upper()
 
-    if "NEGATIVE" in result:
-        return "NEGATIVE"
-    return "KEEP"
-
-
-# -------------------------
-# GOOGLE ADS FORMAT
-# -------------------------
-def format_google_ads_negatives(terms):
-    formatted = []
-    for t in terms:
-        t = t.strip()
-        if not t:
-            continue
-
-        if " " in t:
-            formatted.append(f'-"{t}"')
-        else:
-            formatted.append(f"-{t}")
-
-    return sorted(set(formatted))
+    return "NEGATIVE" if "NEGATIVE" in result else "KEEP"
 
 
 # -------------------------
@@ -232,14 +244,11 @@ if run:
         st.stop()
 
     # -------------------------
-    # SCRAPE
+    # SCRAPE + BRAND
     # -------------------------
     page_text = scrape_page_text(landing_page)
-
-    # -------------------------
-    # BRAND
-    # -------------------------
     brand_raw = analyse_brand_positioning(page_text)
+    brand_data = parse_brand(brand_raw)
 
     # -------------------------
     # TERMS
@@ -250,9 +259,6 @@ if run:
         if t.strip()
     ]))
 
-    # -------------------------
-    # HARD RULES (SAFE FILTER)
-    # -------------------------
     hard_rules = ["jobs","job","career","careers","salary","hiring","login","portal","reddit","youtube"]
 
     remaining = []
@@ -265,7 +271,7 @@ if run:
             remaining.append(t)
 
     # -------------------------
-    # AI CLASSIFICATION LOOP (NO HALLUCINATION)
+    # AI LOOP (CONTROLLED)
     # -------------------------
     ai_negatives = []
 
@@ -275,34 +281,32 @@ if run:
     for i, term in enumerate(remaining):
 
         progress.progress(int((i + 1) / len(remaining) * 100))
-        status.info(f"Classifying {i+1} of {len(remaining)}")
+        status.info(f"Processing {i+1} / {len(remaining)}")
 
         decision = classify_term(term, brand_raw, campaign_type)
 
         if decision == "NEGATIVE":
             ai_negatives.append(term)
 
-        time.sleep(0.05)
+        time.sleep(0.03)
 
     # -------------------------
-    # MERGE (ALL FROM INPUT ONLY)
+    # FINAL OUTPUT
     # -------------------------
-    combined = ai_negatives + list(local_negatives)
+    combined = sorted(set(ai_negatives + list(local_negatives)))
 
-    # NO AI GENERATION HERE ANYMORE
-    final = sorted(set(combined))
+    output = "\n".join(format_google_ads_negatives(combined))
 
-    # -------------------------
-    # OUTPUT FORMAT
-    # -------------------------
-    output = "\n".join(format_google_ads_negatives(final))
 
     # -------------------------
-    # OUTPUT
+    # OUTPUT UI
     # -------------------------
     st.success("Analysis Complete")
 
-    st.subheader("Final Negatives (NO HALLUCINATION MODE)")
+    st.subheader("Brand Positioning Summary (Audit)")
+    st.json(brand_data)
+
+    st.subheader("Final Negative Keywords (Google Ads Ready)")
     st.text_area("Copy & Paste", output, height=500)
 
     st.download_button(
@@ -313,3 +317,5 @@ if run:
     )
 
     st.session_state.last_output = output
+    st.session_state.last_brand_analysis = brand_raw
+    st.session_state.running = False
