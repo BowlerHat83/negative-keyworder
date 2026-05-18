@@ -17,11 +17,11 @@ model = genai.GenerativeModel(
 )
 
 st.set_page_config(
-    page_title="Negative Keyworder V4",
+    page_title="Negative Keyworder V2",
     layout="wide"
 )
 
-st.title("Negative Keyworder V4")
+st.title("Negative Keyworder V2")
 
 # -------------------------
 # STATE
