@@ -819,4 +819,3 @@ if st.button("Analyse"):
         final_output,
         file_name="negatives.txt"
     )
-````
