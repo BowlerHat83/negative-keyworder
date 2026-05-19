@@ -7,7 +7,7 @@ from intelli import build_brand_model
 from prefilter import contextual_prefilter
 from classify import classify_terms_batch
 from root import extract_roots_protected
-from finalclass import final_classification
+from outputformat import final_classification
 from output import build_outputs
 
 
