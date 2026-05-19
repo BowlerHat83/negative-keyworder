@@ -2,22 +2,21 @@ from typing import Dict, Any
 
 
 # =====================================================
-# LAYER 8: OUTPUT AGGREGATION LAYER
+# LAYER 8: OUTPUT AGGREGATION
 # =====================================================
 def build_outputs(
     brand_model: Dict[str, Any],
     layer5_data: Dict[str, Any],
-    layer6_roots: Any,
+    layer6_roots,
     layer7_data: Dict[str, Any]
 ) -> Dict[str, Any]:
 
     """
-    Aggregates outputs from multiple pipeline layers.
+    Aggregates outputs from all pipeline layers into UI-ready structure.
 
-    THIS LAYER:
-    - Does NOT classify
-    - Does NOT generate AI output
-    - ONLY composes final UI-ready structures
+    IMPORTANT:
+    - No logic or classification
+    - Only composition + formatting
     """
 
     # =====================================================
@@ -39,7 +38,7 @@ def build_outputs(
     review_queue = layer5_data.get("review", [])
 
     # =====================================================
-    # 3. NEGATIVES (LAYER 6 ROOT OUTPUT)
+    # 3. ROOT NEGATIVES (LAYER 6)
     # =====================================================
     negatives_with_roots = layer6_roots if layer6_roots else []
 
@@ -49,18 +48,17 @@ def build_outputs(
     ai_variations = layer7_data.get("ai_variations", [])
 
     # =====================================================
-    # 5. FINAL GOOGLE ADS LIST (LAYER 7 CLEAN OUTPUT)
+    # 5. FINAL GOOGLE ADS OUTPUT (LAYER 7)
     # =====================================================
-    final_ads_list = layer7_data.get("final_google_ads_list", [])
+    raw_ads = layer7_data.get("final_google_ads_list", [])
 
-    # safety fallback: ensure string format for UI
-    if isinstance(final_ads_list, list):
-        final_google_ads = "\n".join(sorted(set(final_ads_list)))
+    if isinstance(raw_ads, list):
+        final_google_ads = "\n".join(sorted(set(raw_ads)))
     else:
-        final_google_ads = str(final_ads_list)
+        final_google_ads = str(raw_ads)
 
     # =====================================================
-    # RETURN UI STRUCTURE
+    # RETURN STRUCTURE
     # =====================================================
     return {
         "brand_summary": brand_summary,
