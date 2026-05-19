@@ -68,82 +68,115 @@ def chunk_list(data, size=100):
 
         yield data[i:i + size]
 
+def ui_box(title, df=None, text=None):
+    st.markdown(f"### {title}")
+    
+    container = st.container()
+    
+    with container:
+        st.markdown(
+            """
+            <div style="
+                border: 1px solid #333;
+                border-radius: 10px;
+                padding: 15px;
+                background-color: #0e1117;
+                margin-bottom: 20px;
+            ">
+            """,
+            unsafe_allow_html=True
+        )
+
+        if df is not None:
+            st.dataframe(df, use_container_width=True)
+
+        elif text is not None:
+            st.text_area("", text, height=300)
+
+        st.markdown("</div>", unsafe_allow_html=True)
+
 
 # =====================================================
-# CLASSIFICATION RULES (UPDATED DROP-IN)
+# CLASSIFICATION RULES (DROP-IN REPLACEMENT)
 # =====================================================
 CLASSIFICATION_RULES = """
 You are a strict PPC search term classifier.
 
 =====================================================
-HARD OUTPUT BIAS (CRITICAL)
+HARD DECISION RULE (MOST IMPORTANT)
 =====================================================
 
-You MUST strongly prefer NEGATIVE classification.
+YOU MUST DEFAULT TO: NEGATIVE
 
-Decision hierarchy:
-1. NEGATIVE (default)
-2. POSITIVE (only when clearly high intent)
-3. REVIEW (EXTREMELY rare)
+Decision priority:
+1. NEGATIVE (default for ALL uncertain cases)
+2. POSITIVE (ONLY when extremely clear buying intent exists)
+3. REVIEW (ONLY when absolutely unavoidable)
 
 IMPORTANT:
-- REVIEW is DISCOURAGED unless absolutely necessary
-- If you are unsure → choose NEGATIVE
-- Do NOT use REVIEW as a safe option
+- If you are unsure → ALWAYS choose NEGATIVE
+- REVIEW is NOT a safe option
+- REVIEW must be extremely rare (<5% of cases)
 
 =====================================================
-REVIEW PENALTY RULE
+CRITICAL ANTI-REVIEW BIAS
 =====================================================
 
-You MUST NOT overuse REVIEW.
+You are heavily penalised for overusing REVIEW.
 
-Only use REVIEW if ALL conditions are met:
-- The term is clearly commercial-adjacent
+Only use REVIEW if ALL are true:
+- Term is clearly commercial-adjacent
 AND
-- Misclassifying it as negative would likely remove meaningful revenue
+- Misclassifying as negative would likely remove meaningful revenue
 AND
-- You cannot confidently label it positive or negative
+- You cannot confidently decide positive or negative
 
-If ANY condition is missing → choose NEGATIVE.
+If ANY condition is missing → classify as NEGATIVE.
 
 =====================================================
-NEGATIVE DEFINITION (EXPANDED DEFAULT)
+NEGATIVE (EXPANDED DEFAULT CLASS)
 =====================================================
 
 NEGATIVE includes:
 - informational intent
-- research intent
-- comparison intent
-- jobs / careers
-- DIY / how-to
-- low purchase intent
-- vague intent
+- research / learning intent
+- comparison queries
 - competitor research
-- unrelated traffic
+- job/career searches
+- DIY / how-to queries
+- vague or unclear intent
+- low purchase intent
+- irrelevant traffic
+- accidental searches
+- general browsing behavior
 
-DEFAULT ACTION:
-→ NEGATIVE
-
-=====================================================
-POSITIVE DEFINITION (STRICT)
-=====================================================
-
-POSITIVE only if:
-- clear buying intent
-- product/service explicitly desired
-- strong commercial relevance
-- high likelihood of conversion
-
-If not clearly positive → DO NOT mark positive
+DEFAULT RULE:
+→ If unsure at ANY point → NEGATIVE
 
 =====================================================
-OUTPUT REQUIREMENTS
+POSITIVE (STRICT FILTER)
 =====================================================
 
-- Every term must be classified
-- No explanations
-- No missing terms
-- JSON only
+Only classify as POSITIVE if ALL apply:
+- clear and explicit buying intent
+- product or service is directly desired
+- high commercial value is obvious
+- strong likelihood of conversion
+
+If not 100% confident → DO NOT mark positive
+
+=====================================================
+OUTPUT RULES (STRICT)
+=====================================================
+
+- Every term MUST be classified
+- NO explanations
+- NO missing terms
+- JSON ONLY output
+- REVIEW must be minimal
+- NEGATIVE should dominate classification
+
+OUTPUT FORMAT:
 
 {
   "negative": [],
@@ -151,7 +184,6 @@ OUTPUT REQUIREMENTS
   "positive": []
 }
 """
-
 
 # =====================================================
 # UI STATE MACHINE
@@ -337,11 +369,10 @@ if run:
             brand_model_data
         )
 
-    # =====================================================
-    # LAYER 8 — OUTPUT BUILDER
-    # =====================================================
-    with st.spinner("Layer 8 — Building outputs..."):
-
+  # -------------------------
+    # OUTPUT BUILDER
+    # -------------------------
+    with st.spinner("Building outputs..."):
         outputs = build_outputs(
             brand_model=brand_model_data,
             layer5_data=layer5_data,
@@ -349,20 +380,34 @@ if run:
             layer7_data=final_data
         )
 
+    # =====================================================
+    # OUTPUT UI (RESTORED)
+    # =====================================================
     st.success("Analysis Complete")
 
-    # =====================================================
-    # OUTPUTS
-    # =====================================================
-    st.subheader("Review Queue")
-    st.write(outputs["review_queue"])
-
-    st.subheader("Root Negatives")
-    st.write(outputs["negatives_with_roots"])
-
-    st.subheader("Final Output")
-    st.text_area(
-        "Copy-paste ready",
-        outputs["final_google_ads"],
-        height=300
+    ui_box(
+        "Brand Summary",
+        df=pd.DataFrame({"Review Terms": outputs["brand_summary"]})
     )
+
+    ui_box(
+        "Review Queue",
+        df=pd.DataFrame({"Review Terms": outputs["review_queue"]})
+    )
+
+    ui_box(
+        "Root Negatives",
+        df=pd.DataFrame({"Root Negatives": outputs["negatives_with_roots"]})
+    )
+    
+    ui_box(
+        "AI Variations",
+        df=pd.DataFrame({"AI Variations": outputs["ai_variations"]})
+    )
+    
+    ui_box(
+        "Final Google Ads Negative List",
+        text=outputs["final_google_ads"]
+    )
+
+    
