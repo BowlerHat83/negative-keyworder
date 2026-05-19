@@ -1,84 +1,147 @@
+import json
+import re
+import google.generativeai as genai
+
+
 # =====================================================
-# LAYER 8 — INTENT RECONCILIATION ENGINE
+# SAFE GENERATION
 # =====================================================
+def safe_generate(model, prompt, set_error=None):
+    try:
+        res = model.generate_content(prompt)
+        return res.text.strip()
+    except Exception as e:
 
-def resolve_layer8(layer6, layer7, campaign_type="Search"):
+        err = str(e)
+
+        if "429" in err or "quota" in err.lower():
+            if set_error:
+                set_error("E429", "Gemini quota exceeded")
+            return None
+
+        if set_error:
+            set_error("E500", "Final classification error")
+
+        return None
+
+
+# =====================================================
+# JSON PARSER
+# =====================================================
+def extract_json(text: str):
+    if not text:
+        return None
+
+    try:
+        return json.loads(text)
+    except:
+        m = re.search(r"\{.*\}", text, re.DOTALL)
+        if m:
+            try:
+                return json.loads(m.group())
+            except:
+                return None
+    return None
+
+
+# =====================================================
+# LAYER 7: FINAL CLASSIFICATION ENGINE
+# =====================================================
+def final_classification(roots: list, brand_model: dict, set_error=None):
+
     """
-    Final decision layer:
-    - resolves negatives
-    - protects positives
-    - preserves review queue
-    - applies root-based filtering safely
+    Input:
+        roots -> Layer 6 compressed negative roots
+        brand_model -> Layer 3 intelligence
+
+    Output:
+        structured PPC-ready dataset
     """
 
-    # =====================================================
-    # INPUTS
-    # =====================================================
+    model = genai.GenerativeModel("gemini-2.5-flash")
 
-    negatives = set(layer6.get("negative", []))
-    reviews = set(layer6.get("review", []))
-    positives = set(layer6.get("positive", []))
+    prompt = f"""
+You are a PPC Negative Keyword Expansion Engine.
 
-    roots = set(layer7 or [])
+You will take root negative keywords and expand them into:
 
-    final_broad = set()
-    final_phrase = set()
+1. Final Google Ads negative keyword list
+2. AI-generated variations (synonyms, phrasing variants)
+3. Review-safe ambiguous keywords
+4. Positive-safe exclusions (do NOT negate)
 
-    # =====================================================
-    # 1. PROTECT POSITIVE TERMS (NEVER NEGATIVE THEM)
-    # =====================================================
+-------------------------
+INPUT ROOT NEGATIVES
+-------------------------
+{roots}
 
-    negatives = {n for n in negatives if n not in positives}
+-------------------------
+BRAND CONTEXT
+-------------------------
+{json.dumps(brand_model)}
 
-    # =====================================================
-    # 2. REVIEW TERMS PASS THROUGH (NO AUTOMATION)
-    # =====================================================
+-------------------------
+TASK
+-------------------------
 
-    review_output = sorted(reviews)
+Generate structured output:
 
-    # =====================================================
-    # 3. NEGATIVE RESOLUTION
-    # =====================================================
+{{
+  "final_google_ads_negatives": [],
+  "ai_negative_variations": [],
+  "review_queue": [],
+  "positives": [],
+  "brand_summary": ""
+}}
 
-    for term in negatives:
+-------------------------
+RULES
+-------------------------
 
-        t = term.lower().strip()
-        words = t.split()
+1. Expand ONLY from root negatives
+2. Do NOT introduce unrelated industries
+3. Variations must be PPC realistic (Google Ads style)
+4. Keep review queue conservative
+5. Positives must NOT overlap with negatives
+6. Output MUST be valid JSON only
 
-        matched_roots = [r for r in roots if r in t]
+-------------------------
+OUTPUT FORMAT ONLY
+-------------------------
+"""
 
-        # -------------------------------------------------
-        # CASE 1: NO ROOT MATCH → SAFE PHRASE NEGATIVE
-        # -------------------------------------------------
-        if not matched_roots:
-            final_phrase.add(f'"{term}"')
-            continue
+    raw = safe_generate(model, prompt, set_error=set_error)
 
-        # -------------------------------------------------
-        # CASE 2: PURE ROOT (ATOMIC INTENT)
-        # Example: "jobs"
-        # -------------------------------------------------
-        if len(words) == 1:
-            final_broad.add(words[0])
-            continue
-
-        # -------------------------------------------------
-        # CASE 3: MULTI-WORD TERM WITH ROOT
-        # DEFAULT SAFE BEHAVIOUR = PHRASE NEGATIVE
-        #
-        # IMPORTANT:
-        # Even if intent is similar, specificity protects
-        # commercial overlap.
-        # -------------------------------------------------
-
-        final_phrase.add(f'"{term}"')
+    data = extract_json(raw)
 
     # =====================================================
-    # 4. OUTPUT STRUCTURE
+    # FALLBACK STRUCTURE
     # =====================================================
+    if not data:
+        return {
+            "final_google_ads_negatives": [],
+            "ai_negative_variations": [],
+            "review_queue": [],
+            "positives": [],
+            "brand_summary": "Error or empty response"
+        }
 
-    return {
-        "broad_negatives": sorted(final_broad),
-        "phrase_negatives": sorted(final_phrase),
-        "review_queue": review_output
-    }
+    # =====================================================
+    # SAFETY NORMALISATION
+    # =====================================================
+    for k in [
+        "final_google_ads_negatives",
+        "ai_negative_variations",
+        "review_queue",
+        "positives"
+    ]:
+        if k not in data or data[k] is None:
+            data[k] = []
+
+    # =====================================================
+    # DEDUPLICATION (IMPORTANT FOR ADS EXPORT)
+    # =====================================================
+    data["final_google_ads_negatives"] = list(set(data["final_google_ads_negatives"]))
+    data["ai_negative_variations"] = list(set(data["ai_negative_variations"]))
+
+    return data
