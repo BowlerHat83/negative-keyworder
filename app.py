@@ -95,6 +95,16 @@ def ui_box(title, df=None, text=None):
 
         st.markdown("</div>", unsafe_allow_html=True)
 
+def safe_flatten(lst):
+    clean = []
+    for item in lst:
+        if isinstance(item, list):
+            clean.extend(item)
+        elif item is None:
+            continue
+        else:
+            clean.append(item)
+    return clean
 
 # =====================================================
 # CLASSIFICATION RULES (DROP-IN REPLACEMENT)
@@ -387,22 +397,40 @@ if run:
 
     ui_box(
         "Brand Summary",
-        df=pd.DataFrame({"Review Terms": outputs["brand_summary"]})
+        root_clean = safe_flatten(outputs["brand_summary"])
+
+        st.dataframe(
+        text=outputs["brand_summary"]       
     )
 
     ui_box(
         "Review Queue",
-        df=pd.DataFrame({"Review Terms": outputs["review_queue"]})
+        review_clean = safe_flatten(outputs["review_queue"])
+
+        st.dataframe(
+            pd.DataFrame({"Review Terms": review_clean}),
+            use_container_width=True
+        )
     )
 
     ui_box(
         "Root Negatives",
-        df=pd.DataFrame({"Root Negatives": outputs["negatives_with_roots"]})
+        root_clean = safe_flatten(outputs["negatives_with_roots"])
+
+        st.dataframe(
+            pd.DataFrame({"Root Negatives": root_clean}),
+            use_container_width=True
+        )
     )
     
     ui_box(
         "AI Variations",
-        df=pd.DataFrame({"AI Variations": outputs["ai_variations"]})
+        ai_clean = safe_flatten(outputs["ai_variations"])
+
+        st.dataframe(
+            pd.DataFrame({"AI Variations": ai_clean}),
+            use_container_width=True
+        )
     )
     
     ui_box(
