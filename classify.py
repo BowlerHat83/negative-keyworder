@@ -186,10 +186,11 @@ OUTPUT FORMAT
     # =====================================================
     if not data:
         return {
-            "negative": [],
-            "review": batch_terms,   # safe fallback
+            "negative": batch_terms,
+            "review": [],
             "positive": []
         }
+    
 
     # =====================================================
     # NORMALISATION SAFETY
