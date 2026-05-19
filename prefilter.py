@@ -1,98 +1,126 @@
 import re
+from typing import List, Tuple, Dict
+
 
 # =====================================================
 # NORMALISATION
 # =====================================================
-
 def normalize(text: str) -> str:
     return re.sub(r"\s+", " ", text.strip().lower())
 
 
 # =====================================================
-# CONTEXTUAL PREFILTER ENGINE
+# SCORE-BASED PREFILTER (BRAND CONTEXT DRIVEN)
 # =====================================================
-
-def contextual_prefilter(terms: list, brand: dict):
+def contextual_prefilter(terms: List[str], brand_model: Dict) -> Tuple[List[str], List[str]]:
 
     """
-    Removes obviously irrelevant terms using BRAND CONTEXT.
-    Keeps ambiguous terms for AI classification.
+    Layer 4 Prefilter Engine
+
+    Input:
+        terms -> raw search terms
+        brand_model -> Layer 3 output
+
+    Output:
+        auto_negative -> safe removals
+        remaining -> must go to LLM
     """
 
     auto_negative = []
     remaining = []
 
-    # =========================
-    # BRAND SIGNALS
-    # =========================
+    # =====================================================
+    # BRAND CONTEXT SIGNALS (FROM LAYER 3 ONLY)
+    # =====================================================
+    positioning = brand_model.get("positioning", "unknown")
+    price_positioning = brand_model.get("price_positioning", "unknown")
+    intent_profile = brand_model.get("intent_profile", "unknown")
 
-    low_value_signals = set([
-        normalize(x)
-        for x in brand.get("low_value_intents", [])
-    ])
+    safe_roots = set(normalize(x) for x in brand_model.get("safe_roots", []))
+    low_value_intents = set(normalize(x) for x in brand_model.get("low_value_intents", []))
+    risk_terms = set(normalize(x) for x in brand_model.get("risk_terms", []))
+    bias_rules = brand_model.get("negative_bias_rules", [])
 
-    safe_roots = set([
-        normalize(x)
-        for x in brand.get("safe_roots", [])
-    ])
+    # =====================================================
+    # RULE ENGINE (CONTEXTUAL, NOT HARDCODED FILTERING)
+    # =====================================================
 
-    product_states = set([
-        normalize(x)
-        for x in brand.get("product_state_context", [])
-    ])
+    def violates_low_value(term: str) -> bool:
+        """Check against learned low-value intents"""
+        return any(sig in term for sig in low_value_intents)
 
-    # =========================
-    # RULE 1: LOW VALUE INTENT MATCH
-    # =========================
+    def safe_root_match(term: str) -> bool:
+        """Protect brand-critical language"""
+        return any(root in term for root in safe_roots)
 
+    def risk_context(term: str) -> bool:
+        """Do NOT auto-remove — send to LLM"""
+        return any(risk in term for risk in risk_terms)
+
+    # =====================================================
+    # BIAS RULE EVALUATION (DYNAMIC)
+    # =====================================================
+    def apply_bias_rules(term: str) -> bool:
+        """
+        Returns True if term is clearly negative based on brand rules
+        """
+
+        for rule in bias_rules:
+            rule = normalize(rule)
+
+            # simple semantic rule interpretation
+            if "cheap" in rule and "luxury" in positioning:
+                if "cheap" in term:
+                    return True
+
+            if "free" in rule and intent_profile == "commercial":
+                if "free" in term:
+                    return True
+
+            if "used" in rule and "new" in positioning:
+                if "used" in term:
+                    return True
+
+        return False
+
+    # =====================================================
+    # MAIN LOOP
+    # =====================================================
     for term in terms:
 
         t = normalize(term)
 
-        matched = False
-
-        for signal in low_value_signals:
-            if signal and signal in t:
-                auto_negative.append(term)
-                matched = True
-                break
-
-        if matched:
+        # -------------------------------------------------
+        # 1. PROTECT SAFE ROOTS (NEVER REMOVE)
+        # -------------------------------------------------
+        if safe_root_match(t):
+            remaining.append(term)
             continue
 
-        # =========================
-        # RULE 2: SAFE ROOT PROTECTION
-        # (DO NOT FILTER THESE)
-        # =========================
-
-        for root in safe_roots:
-            if root and root in t:
-                remaining.append(term)
-                matched = True
-                break
-
-        if matched:
+        # -------------------------------------------------
+        # 2. RISK TERMS → ALWAYS PASS TO LLM
+        # -------------------------------------------------
+        if risk_context(t):
+            remaining.append(term)
             continue
 
-        # =========================
-        # RULE 3: PRODUCT STATE CONTEXT
-        # (DO NOT AUTO-NEGATIVE THESE)
-        # =========================
-
-        for state in product_states:
-            if state and state in t:
-                remaining.append(term)
-                matched = True
-                break
-
-        if matched:
+        # -------------------------------------------------
+        # 3. LOW VALUE INTENT CHECK
+        # -------------------------------------------------
+        if violates_low_value(t):
+            auto_negative.append(term)
             continue
 
-        # =========================
-        # RULE 4: DEFAULT BEHAVIOUR
-        # (PASS TO AI FOR SAFETY)
-        # =========================
+        # -------------------------------------------------
+        # 4. BRAND BIAS RULES
+        # -------------------------------------------------
+        if apply_bias_rules(t):
+            auto_negative.append(term)
+            continue
 
+        # -------------------------------------------------
+        # 5. DEFAULT → LET AI DECIDE
+        # -------------------------------------------------
         remaining.append(term)
 
     return auto_negative, remaining
