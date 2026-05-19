@@ -1,106 +1,71 @@
-def score_confidence(term, roots, reviews, positives):
-
-    t = term.lower()
-
-    score = 1.0
-
-    # review penalty (uncertainty)
-    if any(r.lower() in t for r in reviews):
-        score -= 0.25
-
-    # positive overlap penalty (high risk signal)
-    if any(p.lower() in t for p in positives):
-        score -= 0.5
-
-    # root context adjustment
-    matched_roots = [r for r in roots if r in t]
-
-    if matched_roots:
-
-        if len(t.split()) > 1:
-            score -= 0.15  # phrase complexity penalty
-
-    # clamp
-    return max(0.0, min(1.0, score))
+from typing import Dict, Any
 
 
 # =====================================================
-# UPDATED LAYER 8 OUTPUT BUILDER
+# LAYER 8: OUTPUT AGGREGATION LAYER
 # =====================================================
+def build_outputs(
+    brand_model: Dict[str, Any],
+    layer5_data: Dict[str, Any],
+    layer6_roots: Any,
+    layer7_data: Dict[str, Any]
+) -> Dict[str, Any]:
 
-def build_layer8_output_v2(layer6, layer7, brand_summary, ai_variations):
+    """
+    Aggregates outputs from multiple pipeline layers.
 
-    negatives = set(layer6.get("negative", []))
-    reviews = set(layer6.get("review", []))
-    positives = set(layer6.get("positive", []))
+    THIS LAYER:
+    - Does NOT classify
+    - Does NOT generate AI output
+    - ONLY composes final UI-ready structures
+    """
 
-    roots = set(layer7 or [])
+    # =====================================================
+    # 1. BRAND SUMMARY (LAYER 3)
+    # =====================================================
+    brand_summary = {
+        "business_type": brand_model.get("business_type"),
+        "positioning": brand_model.get("positioning"),
+        "price_positioning": brand_model.get("price_positioning"),
+        "intent_profile": brand_model.get("intent_profile", "unknown"),
+        "core_offerings": brand_model.get("core_offerings", []),
+        "safe_roots": brand_model.get("safe_roots", []),
+        "risk_terms": brand_model.get("risk_terms", [])
+    }
 
-    # remove positives from negatives
-    negatives = {n for n in negatives if n not in positives}
+    # =====================================================
+    # 2. REVIEW QUEUE (LAYER 5)
+    # =====================================================
+    review_queue = layer5_data.get("review", [])
 
-    search_term_negatives = []
+    # =====================================================
+    # 3. NEGATIVES (LAYER 6 ROOT OUTPUT)
+    # =====================================================
+    negatives_with_roots = layer6_roots if layer6_roots else []
 
-    # =========================
-    # ADD CONFIDENCE SCORING
-    # =========================
+    # =====================================================
+    # 4. AI VARIATIONS (LAYER 7)
+    # =====================================================
+    ai_variations = layer7_data.get("ai_variations", [])
 
-    for term in negatives:
+    # =====================================================
+    # 5. FINAL GOOGLE ADS LIST (LAYER 7 CLEAN OUTPUT)
+    # =====================================================
+    final_ads_list = layer7_data.get("final_google_ads_list", [])
 
-        confidence = score_confidence(
-            term,
-            roots,
-            reviews,
-            positives
-        )
+    # safety fallback: ensure string format for UI
+    if isinstance(final_ads_list, list):
+        final_google_ads = "\n".join(sorted(set(final_ads_list)))
+    else:
+        final_google_ads = str(final_ads_list)
 
-        # determine type
-        t = term.lower()
-
-        if len(t.split()) == 1:
-            match_type = "broad"
-        else:
-            match_type = "phrase"
-
-        search_term_negatives.append({
-            "term": term,
-            "confidence": round(confidence, 3),
-            "type": match_type
-        })
-
-    # =========================
-    # GOOGLE ADS EXPORT
-    # =========================
-
-    google_ads_list = []
-
-    for item in search_term_negatives:
-
-        term = item["term"]
-
-        if item["type"] == "phrase":
-            google_ads_list.append(f'"{term}"')
-        else:
-            google_ads_list.append(term)
-
-    # include AI variations (no scoring yet, keep simple)
-    for v in ai_variations:
-        if v not in positives:
-            if " " in v:
-                google_ads_list.append(f'"{v}"')
-            else:
-                google_ads_list.append(v)
-
+    # =====================================================
+    # RETURN UI STRUCTURE
+    # =====================================================
     return {
         "brand_summary": brand_summary,
-        "review_queue": sorted(reviews),
-
-        # OUTPUT 3 UPDATED
-        "search_term_negatives": search_term_negatives,
-
-        "ai_variations": sorted(set(ai_variations)),
-
-        "google_ads_export": "\n".join(sorted(set(google_ads_list))),
-
-        "positive_keywords": sorted(positives)
+        "review_queue": review_queue,
+        "negatives_with_roots": negatives_with_roots,
+        "ai_variations": ai_variations,
+        "final_google_ads": final_google_ads
     }
