@@ -365,8 +365,20 @@ if run:
     st.success("Analysis Complete")
 
     brand_clean = safe_flatten([outputs["brand_summary"]])
-    ui_box("Brand Summary", text="\n".join(map(str, brand_clean)))
 
+    brand_lines = []
+    for item in brand_clean:
+        if isinstance(item, str):
+            # split multi-line strings into real lines
+            brand_lines.extend(item.split("\n"))
+        else:
+            brand_lines.append(str(item))
+
+    ui_box(
+        "Brand Summary",
+        text="\n".join([line for line in brand_lines if line.strip()])
+    )
+    
     review_clean = safe_flatten(outputs["review_queue"])
     ui_box("Review Queue", df=pd.DataFrame({"Review Terms": review_clean}))
 
