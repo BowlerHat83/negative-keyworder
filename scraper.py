@@ -1,53 +1,103 @@
 import requests
 from bs4 import BeautifulSoup
-import re
+from typing import List, Optional
 
-# =========================
-# SINGLE PAGE
-# =========================
 
-def scrape_page(url: str) -> str:
+# =====================================================
+# CONFIG
+# =====================================================
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0 Safari/537.36"
+    )
+}
+
+TIMEOUT = 10
+
+
+# =====================================================
+# FETCH PAGE
+# =====================================================
+def fetch_page(url: str) -> str:
     try:
-        r = requests.get(url, headers={"User-Agent": "Mozilla"}, timeout=10)
-        soup = BeautifulSoup(r.text, "html.parser")
+        if not url:
+            return ""
 
-        for t in soup(["script", "style", "nav", "footer", "svg"]):
-            t.decompose()
+        if not url.startswith("http"):
+            url = "https://" + url
 
-        title = soup.title.get_text(" ", strip=True) if soup.title else ""
+        res = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
+        res.raise_for_status()
+        return res.text
 
-        text = " ".join([
-            title,
-            " ".join(p.get_text(" ", strip=True) for p in soup.find_all("p"))
-        ])
-
-        return re.sub(r"\s+", " ", text).strip()[:6000]
-
-    except:
+    except Exception as e:
+        print(f"[SCRAPER ERROR] {url} -> {e}")
         return ""
 
-# =========================
-# MULTI PAGE (PMax)
-# =========================
 
-def scrape_multiple_pages(urls):
-    out = []
+# =====================================================
+# CLEAN HTML
+# =====================================================
+def clean_html(html: str) -> str:
+    if not html:
+        return ""
 
-    for u in urls:
-        t = scrape_page(u)
-        if t:
-            out.append(t)
+    soup = BeautifulSoup(html, "html.parser")
 
-    return " ".join(out)[:12000]
+    # remove noise elements
+    for tag in soup(["script", "style", "noscript", "svg", "footer", "nav", "header"]):
+        tag.decompose()
 
-# =========================
-# ROUTER
-# =========================
+    # extract readable text
+    text = soup.get_text(separator=" ", strip=True)
 
-def get_landing_context(campaign_type, landing_page, landing_pages):
+    # normalize whitespace
+    text = " ".join(text.split())
 
-    if campaign_type == "PMax":
-        urls = [u.strip() for u in landing_pages.split("\n") if u.strip()]
-        return scrape_multiple_pages(urls)
+    return text.strip()
 
-    return scrape_page(landing_page)
+
+# =====================================================
+# SCRAPE SINGLE PAGE
+# =====================================================
+def scrape_single(url: str) -> str:
+    html = fetch_page(url)
+    return clean_html(html)
+
+
+# =====================================================
+# MAIN PIPELINE FUNCTION
+# =====================================================
+def get_landing_context(
+    campaign_type: str,
+    landing_page: Optional[str],
+    landing_pages: Optional[List[str]]
+) -> str:
+
+    all_text = []
+
+    # -------------------------
+    # SINGLE PAGE CAMPAIGNS
+    # -------------------------
+    if campaign_type != "PMax":
+        if landing_page:
+            scraped = scrape_single(landing_page)
+            if scraped:
+                all_text.append(scraped)
+
+    # -------------------------
+    # PMax MULTI PAGE CAMPAIGNS
+    # -------------------------
+    else:
+        if landing_pages:
+            for url in landing_pages:
+                scraped = scrape_single(url)
+                if scraped:
+                    all_text.append(scraped)
+
+    # merge safely
+    combined = "\n\n".join(all_text).strip()
+
+    return combined
