@@ -67,7 +67,7 @@ def classify_terms_batch(
     brand,
     campaign_type,
     target_keywords,
-    set_error=None
+    rules
 ):
 
     # safety: empty batch
@@ -77,6 +77,7 @@ def classify_terms_batch(
     formatted_terms = "\n".join([f"- {t}" for t in batch_terms])
 
     prompt = f"""
+    {rules}
 You are a strict PPC classification engine.
 
 Your job:
@@ -94,7 +95,9 @@ CRITICAL RULES
 2. Do NOT skip any term
 3. Do NOT invent new terms
 4. Output MUST be valid JSON only
-5. If unsure → review
+5. REVIEW should be RARE
+6. If slightly unsure → negative
+7. REVIEW only if excluding could block valuable traffic
 
 -------------------------
 BRAND CONTEXT
@@ -123,7 +126,7 @@ OUTPUT FORMAT (STRICT JSON ONLY)
 }}
 """
 
-    raw = safe_generate(model, prompt, set_error=set_error)
+    raw = safe_generate(model, prompt)
 
     data = extract_json(raw)
 
