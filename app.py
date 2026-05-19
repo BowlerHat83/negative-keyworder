@@ -8,7 +8,7 @@ import time
 try:
     from scraper import get_landing_context
     from classify import classify_terms_batch
-    from prefilter import run_prefilter
+    from prefilter import contextual_prefilter
     from root import extract_roots
     from finalclass import final_classification
     from output import build_outputs
