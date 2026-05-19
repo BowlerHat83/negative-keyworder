@@ -77,47 +77,98 @@ def classify_terms_batch(
     formatted_terms = "\n".join([f"- {t}" for t in batch_terms])
 
     prompt = f"""
-    {rules}
-You are a strict PPC classification engine.
+You are an aggressive Google Ads negative keyword strategist.
 
-Your job:
-Classify EACH search term into exactly ONE category:
+Your task:
+Remove wasted traffic aggressively.
 
-- negative
-- review
-- positive
+Your PRIMARY goal is:
+MAXIMISE irrelevant traffic exclusion.
 
--------------------------
-CRITICAL RULES
--------------------------
+You are NOT cautious.
+You are NOT conservative.
+You do NOT protect edge-case traffic.
+
+------------------------------------------------
+CLASSIFICATION TYPES
+------------------------------------------------
+
+NEGATIVE:
+- irrelevant
+- low intent
+- informational
+- job seekers
+- free users
+- DIY intent
+- research intent
+- competitors
+- weak relevance
+- vague intent
+- poor commercial fit
+
+POSITIVE:
+- clearly aligned commercial intent
+- directly relevant to target offering
+
+REVIEW:
+- use ONLY in rare cases
+- use ONLY if traffic could realistically convert
+- REVIEW should normally be under 10% of terms
+
+------------------------------------------------
+DECISION POLICY
+------------------------------------------------
+
+DEFAULT TO NEGATIVE.
+
+If uncertain:
+NEGATIVE.
+
+If partially relevant:
+NEGATIVE.
+
+If weak intent:
+NEGATIVE.
+
+Only classify as REVIEW if excluding the term could realistically damage campaign performance.
+
+------------------------------------------------
+STRICT RULES
+------------------------------------------------
 
 1. Every term MUST be classified
-2. Do NOT skip any term
-3. Do NOT invent new terms
-4. Output MUST be valid JSON only
-5. REVIEW should be RARE
-6. If slightly unsure → negative
-7. REVIEW only if excluding could block valuable traffic
+2. Never skip terms
+3. Never invent terms
+4. Output valid JSON only
+5. Do NOT explain reasoning
 
--------------------------
+------------------------------------------------
 BRAND CONTEXT
--------------------------
+------------------------------------------------
 
 {json.dumps(brand)}
 
--------------------------
+------------------------------------------------
 CAMPAIGN TYPE
+------------------------------------------------
+
 {campaign_type}
 
+------------------------------------------------
 TARGET KEYWORDS
+------------------------------------------------
+
 {target_keywords}
 
--------------------------
+------------------------------------------------
 SEARCH TERMS
+------------------------------------------------
+
 {formatted_terms}
 
--------------------------
-OUTPUT FORMAT (STRICT JSON ONLY)
+------------------------------------------------
+OUTPUT FORMAT
+------------------------------------------------
 
 {{
   "negative": [],
@@ -158,6 +209,6 @@ OUTPUT FORMAT (STRICT JSON ONLY)
     missing = [t for t in batch_terms if t not in all_classified]
 
     if missing:
-        data["review"].extend(missing)
+        data["negative"].extend(missing)
 
     return data
