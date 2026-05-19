@@ -25,16 +25,13 @@ st.title("Negative Keyworder V4")
 
 
 # =====================================================
-# CSV PARSER
+# HELPERS
 # =====================================================
 def parse_csv(file):
     df = pd.read_csv(file)
     return df.iloc[:, 0].dropna().astype(str).tolist()
 
 
-# =====================================================
-# CHUNKING
-# =====================================================
 def chunk_list(data, size=100):
     for i in range(0, len(data), size):
         yield data[i:i + size]
@@ -60,7 +57,7 @@ target_keywords = st.text_area("Target Keywords (optional)")
 
 
 # =====================================================
-# RUN BUTTON
+# RUN
 # =====================================================
 if st.button("Run Analysis"):
 
@@ -68,11 +65,11 @@ if st.button("Run Analysis"):
     # VALIDATION
     # -------------------------
     if not uploaded_file:
-        st.error("Upload a CSV file")
+        st.error("Please upload a CSV file")
         st.stop()
 
     if campaign_type != "PMax" and not landing_page:
-        st.error("Landing page required")
+        st.error("Landing page URL is required")
         st.stop()
 
     landing_pages = None
@@ -85,6 +82,10 @@ if st.button("Run Analysis"):
     # STEP 1: LOAD TERMS
     # -------------------------
     terms = parse_csv(uploaded_file)
+
+    if not terms:
+        st.error("CSV contains no valid terms")
+        st.stop()
 
     # -------------------------
     # STEP 2: LANDING CONTEXT
@@ -109,22 +110,29 @@ if st.button("Run Analysis"):
     # -------------------------
     auto_neg, remaining = contextual_prefilter(terms, brand_model)
 
+    remaining = remaining or []
+
+    if len(remaining) == 0 and len(auto_neg) == 0:
+        st.warning("No terms to process after prefilter")
+        st.stop()
+
     # -------------------------
-    # STEP 5: CLASSIFY
+    # STEP 5: CLASSIFICATION
     # -------------------------
     negatives, reviews, positives = [], [], []
 
     batches = list(chunk_list(remaining, 100))
+
+    if len(batches) == 0:
+        st.warning("No valid batches created")
+        st.stop()
+
     progress = st.progress(0)
     status = st.empty()
 
-    if len(batches) == 0:
-        st.warning("No terms after prefilter")
-        st.stop()
-
     for i, batch in enumerate(batches):
 
-        status.info(f"Processing batch {i+1}/{len(batches)}")
+        status.info(f"Processing batch {i+1} / {len(batches)}")
 
         result = classify_terms_batch(
             model=model,
@@ -132,7 +140,7 @@ if st.button("Run Analysis"):
             brand=brand_model,
             campaign_type=campaign_type,
             target_keywords=target_keywords
-        )
+        ) or {}
 
         negatives += result.get("negative", [])
         reviews += result.get("review", [])
@@ -140,7 +148,7 @@ if st.button("Run Analysis"):
 
         progress.progress(int((i + 1) / len(batches) * 60))
 
-    # include deterministic negatives
+    # merge deterministic negatives
     negatives += auto_neg
 
     classified = {
@@ -165,7 +173,7 @@ if st.button("Run Analysis"):
     final_data = final_classification(roots, brand_model)
 
     # -------------------------
-    # STEP 8: OUTPUTS
+    # STEP 8: OUTPUT BUILD
     # -------------------------
     outputs = build_outputs(final_data, brand_model)
 
@@ -173,7 +181,7 @@ if st.button("Run Analysis"):
     status.success("Analysis complete")
 
     # -------------------------
-    # UI OUTPUTS
+    # OUTPUT UI
     # -------------------------
     st.subheader("1. Brand Summary")
     st.write(outputs.get("brand_summary"))
@@ -190,7 +198,7 @@ if st.button("Run Analysis"):
     st.subheader("5. Final Google Ads Negative List")
     st.text_area(
         "Copy-paste ready",
-        outputs.get("final_google_ads"),
+        outputs.get("final_google_ads", ""),
         height=300
     )
 
