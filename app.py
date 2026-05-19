@@ -58,7 +58,7 @@ def chunk_list(data, size=100):
 # =====================================================
 campaign_type = st.selectbox(
     "Campaign Type",
-    ["-", "Search", "Shopping", "Display", "PMax"]
+    ["", "Search", "Shopping", "Display", "PMax"]
 )
 
 uploaded_file = st.file_uploader("Search Terms CSV", type=["csv"])
@@ -117,9 +117,9 @@ if run:
         set_error("E001", "Missing search terms CSV")
         st.stop()
 
-    if campaign_type == "-":
-    set_error("E000", "Please select a valid campaign type")
-    st.stop()
+    if campaign_type == "":
+        set_error("E000", "Please select a valid campaign type")
+        st.stop()
 
     if campaign_type == "PMax":
         if not landing_pages_raw:
