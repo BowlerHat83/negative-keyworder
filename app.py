@@ -253,7 +253,6 @@ elif campaign_type == "Search":
 
 run = st.button("Run Analysis")
 
-
 # =====================================================
 # RUN PIPELINE
 # =====================================================
@@ -269,20 +268,21 @@ if run:
         set_error("E000", "Please select campaign type")
         st.stop()
 
-    if campaign_type == "PMax":
-        if not landing_pages_raw:
-            set_error("E002", "PMax requires landing pages")
-            st.stop()
+    if campaign_type == "PMax" and not landing_pages_raw:
+        set_error("E002", "PMax requires landing pages")
+        st.stop()
 
-    else:
-        if not landing_page:
-            set_error("E003", "Missing landing page URL")
-            st.stop()
+    if campaign_type != "PMax" and not landing_page:
+        set_error("E003", "Missing landing page URL")
+        st.stop()
 
     if campaign_type == "Search" and not target_keywords:
         set_error("E004", "Search campaigns require target keywords")
         st.stop()
 
+    # -------------------------
+    # DATA PIPELINE
+    # -------------------------
     terms = parse_csv(uploaded_file)
 
     landing_pages = (
@@ -291,50 +291,30 @@ if run:
         else None
     )
 
-    # =====================================================
-    # LAYER 2 — SCRAPER
-    # =====================================================
     with st.spinner("Layer 2 — Scraping landing pages..."):
-
         landing_context = get_landing_context(
             campaign_type=campaign_type,
             landing_page=landing_page,
             landing_pages=landing_pages
         )
 
-    # =====================================================
-    # LAYER 3 — BRAND INTELLIGENCE
-    # =====================================================
     with st.spinner("Layer 3 — Building brand intelligence..."):
-
         brand_model_data = build_brand_model(
             page_text=landing_context,
             target_keywords=target_keywords,
             campaign_type=campaign_type
         )
 
-    # =====================================================
-    # LAYER 4 — PREFILTER
-    # =====================================================
     with st.spinner("Layer 4 — Prefiltering terms..."):
-
         auto_neg, remaining = contextual_prefilter(
             terms,
             brand_model_data
         )
 
-    # =====================================================
-    # LAYER 5 — CLASSIFICATION ENGINE
-    # =====================================================
     with st.spinner("Layer 5 — Classifying terms..."):
+        negatives, reviews, positives = [], [], []
 
-        negatives = []
-        reviews = []
-        positives = []
-
-        batches = list(chunk_list(remaining, 100))
-
-        for batch in batches:
+        for batch in chunk_list(remaining, 100):
 
             result = classify_terms_batch(
                 model=model,
@@ -357,11 +337,7 @@ if run:
             "positive": positives
         }
 
-    # =====================================================
-    # LAYER 6 — ROOT EXTRACTION
-    # =====================================================
     with st.spinner("Layer 6 — Extracting root negatives..."):
-
         roots = extract_roots_protected(
             negative_terms=layer5_data["negative"],
             review_terms=layer5_data["review"],
@@ -369,19 +345,12 @@ if run:
             brand_model=brand_model_data
         )
 
-    # =====================================================
-    # LAYER 7 — FINAL FORMATTING
-    # =====================================================
     with st.spinner("Layer 7 — Final formatting..."):
-
         final_data = final_classification(
             roots,
             brand_model_data
         )
 
-  # -------------------------
-    # OUTPUT BUILDER
-    # -------------------------
     with st.spinner("Building outputs..."):
         outputs = build_outputs(
             brand_model=brand_model_data,
@@ -390,60 +359,24 @@ if run:
             layer7_data=final_data
         )
 
-# =====================================================
-# OUTPUT UI (CLEAN + TIDY BOXES)
-# =====================================================
-st.success("Analysis Complete")
+    # =====================================================
+    # OUTPUT UI
+    # =====================================================
+    st.success("Analysis Complete")
 
+    brand_clean = safe_flatten([outputs["brand_summary"]])
+    ui_box("Brand Summary", text="\n".join(map(str, brand_clean)))
 
-# =====================================================
-# BRAND SUMMARY
-# =====================================================
-brand_clean = safe_flatten([outputs["brand_summary"]])
+    review_clean = safe_flatten(outputs["review_queue"])
+    ui_box("Review Queue", df=pd.DataFrame({"Review Terms": review_clean}))
 
-ui_box(
-    "Brand Summary",
-    text="\n".join(brand_clean) if isinstance(brand_clean, list) else str(brand_clean)
-)
+    root_clean = safe_flatten(outputs["negatives_with_roots"])
+    ui_box("Root Negatives", df=pd.DataFrame({"Root Negatives": root_clean}))
 
+    ai_clean = safe_flatten(outputs["ai_variations"])
+    ui_box("AI Variations", df=pd.DataFrame({"AI Variations": ai_clean}))
 
-# =====================================================
-# REVIEW QUEUE
-# =====================================================
-review_clean = safe_flatten(outputs["review_queue"])
-
-ui_box(
-    "Review Queue",
-    df=pd.DataFrame({"Review Terms": review_clean}) if review_clean else pd.DataFrame()
-)
-
-
-# =====================================================
-# ROOT NEGATIVES
-# =====================================================
-root_clean = safe_flatten(outputs["negatives_with_roots"])
-
-ui_box(
-    "Root Negatives",
-    df=pd.DataFrame({"Root Negatives": root_clean}) if root_clean else pd.DataFrame()
-)
-
-
-# =====================================================
-# AI VARIATIONS
-# =====================================================
-ai_clean = safe_flatten(outputs["ai_variations"])
-
-ui_box(
-    "AI Variations",
-    df=pd.DataFrame({"AI Variations": ai_clean}) if ai_clean else pd.DataFrame()
-)
-
-
-# =====================================================
-# FINAL OUTPUT
-# =====================================================
-ui_box(
-    "Final Google Ads Negative List",
-    text=outputs["final_google_ads"]
-)
+    ui_box(
+        "Final Google Ads Negative List",
+        text=outputs["final_google_ads"]
+    )
