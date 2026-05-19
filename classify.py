@@ -2,8 +2,16 @@ import json
 import re
 import google.generativeai as genai
 
+"""
 This is the ONLY decision layer.
-No downstream module may reclassify intent.
+
+It is responsible for:
+- negative classification
+- review classification
+- positive classification
+
+No other module may override decisions.
+"""
 
 # =====================================================
 # SAFE GENERATION WRAPPER
