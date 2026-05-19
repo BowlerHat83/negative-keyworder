@@ -1,81 +1,70 @@
 import re
-
-# =====================================================
-# NORMALISE
-# =====================================================
-
-def normalize(t: str) -> str:
-    return re.sub(r"\s+", " ", t.strip().lower())
+from typing import List, Dict
 
 
 # =====================================================
-# ROOT EXTRACTION WITH PROTECTION LAYER
+# NORMALISATION
 # =====================================================
+def normalize(text: str) -> str:
+    return re.sub(r"\s+", " ", text.strip().lower())
 
+
+# =====================================================
+# LAYER 6: ROOT NEGATIVE CONSOLIDATION
+# =====================================================
 def extract_roots_protected(
-    negative_terms,
-    review_terms,
-    positive_terms,
-    brand_model
+    negative_terms: List[str],
+    review_terms: List[str],
+    positive_terms: List[str],
+    brand_model: Dict
 ):
 
     """
-    Extract roots ONLY from negatives,
-    while ensuring we do NOT destroy valid intent patterns
-    found in review/positive terms.
+    Layer 6:
+    Converts negative search terms into ROOT negative keywords
+    ONLY if they do NOT conflict with review/positive intent.
     """
 
-    intent_vocab = {
-        "job", "jobs",
-        "career", "careers",
-        "salary", "salaries",
-        "free",
-        "cheap",
-        "template", "templates",
-        "download",
-        "tutorial",
-        "guide",
-        "pdf",
-        "how"
-    }
+    # =====================================================
+    # BUILD PROTECTED VOCAB (NO NEGATION ALLOWED)
+    # =====================================================
+    protected_tokens = set()
 
-    # =========================
-    # PROTECTION SET
-    # =========================
+    for t in review_terms + positive_terms:
+        for w in normalize(t).split():
+            protected_tokens.add(w)
 
-    protected_terms = set(
-        normalize(t)
-        for t in (review_terms + positive_terms)
+    # =====================================================
+    # BRAND-SAFE ROOTS (ALWAYS PROTECTED)
+    # =====================================================
+    safe_roots = set(
+        normalize(x) for x in brand_model.get("safe_roots", [])
     )
 
-    protected_roots = set(
-        normalize(x)
-        for x in brand_model.get("safe_roots", [])
-    )
-
+    # =====================================================
+    # RESULT SET
+    # =====================================================
     roots = set()
 
-    # =========================
-    # ROOT EXTRACTION LOOP
-    # =========================
-
+    # =====================================================
+    # EXTRACT FROM NEGATIVES ONLY
+    # =====================================================
     for term in negative_terms:
 
-        t = normalize(term)
-
-        # skip if term appears in review/positive context
-        if t in protected_terms:
-            continue
-
-        words = t.split()
+        words = normalize(term).split()
 
         for w in words:
 
-            # protect brand-safe roots
-            if w in protected_roots:
+            # skip brand-protected words
+            if w in safe_roots:
                 continue
 
-            if w in intent_vocab:
-                roots.add(w)
+            # CRITICAL RULE:
+            # do not extract anything that appears in review/positive context
+            if w in protected_tokens:
+                continue
+
+            # valid root negative
+            roots.add(w)
 
     return sorted(roots)
