@@ -20,8 +20,8 @@ model = genai.GenerativeModel("gemini-2.5-flash")
 # =====================================================
 # APP CONFIG
 # =====================================================
-st.set_page_config(page_title="Negative Keyworder V4", layout="wide")
-st.title("Negative Keyworder V4")
+st.set_page_config(page_title="Final Version", layout="wide")
+st.title("Negative Keyworder - Final Version")
 
 
 # =====================================================
