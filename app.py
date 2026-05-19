@@ -390,52 +390,60 @@ if run:
             layer7_data=final_data
         )
 
-    # =====================================================
-    # OUTPUT UI (RESTORED)
-    # =====================================================
-    st.success("Analysis Complete")
+# =====================================================
+# OUTPUT UI (CLEAN + TIDY BOXES)
+# =====================================================
+st.success("Analysis Complete")
 
-    ui_box(
-        "Brand Summary",
-        root_clean = safe_flatten(outputs["brand_summary"])
 
-        st.dataframe(
-        text=outputs["brand_summary"]       
-    )
+# =====================================================
+# BRAND SUMMARY
+# =====================================================
+brand_clean = safe_flatten([outputs["brand_summary"]])
 
-    ui_box(
-        "Review Queue",
-        review_clean = safe_flatten(outputs["review_queue"])
+ui_box(
+    "Brand Summary",
+    text="\n".join(brand_clean) if isinstance(brand_clean, list) else str(brand_clean)
+)
 
-        st.dataframe(
-            pd.DataFrame({"Review Terms": review_clean}),
-            use_container_width=True
-        )
-    )
 
-    ui_box(
-        "Root Negatives",
-        root_clean = safe_flatten(outputs["negatives_with_roots"])
+# =====================================================
+# REVIEW QUEUE
+# =====================================================
+review_clean = safe_flatten(outputs["review_queue"])
 
-        st.dataframe(
-            pd.DataFrame({"Root Negatives": root_clean}),
-            use_container_width=True
-        )
-    )
-    
-    ui_box(
-        "AI Variations",
-        ai_clean = safe_flatten(outputs["ai_variations"])
+ui_box(
+    "Review Queue",
+    df=pd.DataFrame({"Review Terms": review_clean}) if review_clean else pd.DataFrame()
+)
 
-        st.dataframe(
-            pd.DataFrame({"AI Variations": ai_clean}),
-            use_container_width=True
-        )
-    )
-    
-    ui_box(
-        "Final Google Ads Negative List",
-        text=outputs["final_google_ads"]
-    )
 
-)   
+# =====================================================
+# ROOT NEGATIVES
+# =====================================================
+root_clean = safe_flatten(outputs["negatives_with_roots"])
+
+ui_box(
+    "Root Negatives",
+    df=pd.DataFrame({"Root Negatives": root_clean}) if root_clean else pd.DataFrame()
+)
+
+
+# =====================================================
+# AI VARIATIONS
+# =====================================================
+ai_clean = safe_flatten(outputs["ai_variations"])
+
+ui_box(
+    "AI Variations",
+    df=pd.DataFrame({"AI Variations": ai_clean}) if ai_clean else pd.DataFrame()
+)
+
+
+# =====================================================
+# FINAL OUTPUT
+# =====================================================
+ui_box(
+    "Final Google Ads Negative List",
+    text=outputs["final_google_ads"]
+)
