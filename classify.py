@@ -2,6 +2,8 @@ import json
 import re
 import google.generativeai as genai
 
+This is the ONLY decision layer.
+No downstream module may reclassify intent.
 
 # =====================================================
 # SAFE GENERATION WRAPPER
