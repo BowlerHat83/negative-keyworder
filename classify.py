@@ -1,11 +1,11 @@
 import json
 import re
-import time
+import google.generativeai as genai
+
 
 # =====================================================
 # SAFE GENERATION WRAPPER
 # =====================================================
-
 def safe_generate(model, prompt, set_error=None):
 
     try:
@@ -16,45 +16,41 @@ def safe_generate(model, prompt, set_error=None):
 
         err = str(e)
 
+        # quota handling
         if "429" in err or "quota" in err.lower():
             if set_error:
                 set_error("E429", "Gemini quota exceeded")
             return None
 
         if set_error:
-            set_error("E500", "AI generation error")
+            set_error("E500", "Gemini classification error")
 
         return None
 
 
 # =====================================================
-# JSON PARSER (ROBUST)
+# JSON PARSER (STRICT)
 # =====================================================
-
 def extract_json(text: str):
-
     if not text:
         return None
 
     try:
         return json.loads(text)
-    except:
-
+    except Exception:
         match = re.search(r"\{.*\}", text, re.DOTALL)
-
         if match:
             try:
                 return json.loads(match.group())
-            except:
+            except Exception:
                 return None
 
     return None
 
 
 # =====================================================
-# CLASSIFICATION ENGINE
+# LAYER 5: CLASSIFICATION ENGINE
 # =====================================================
-
 def classify_terms_batch(
     model,
     batch_terms,
@@ -64,94 +60,91 @@ def classify_terms_batch(
     set_error=None
 ):
 
-    """
-    Core PPC classification engine.
-    """
+    # safety: empty batch
+    if not batch_terms:
+        return {"negative": [], "review": [], "positive": []}
 
     formatted_terms = "\n".join([f"- {t}" for t in batch_terms])
 
     prompt = f"""
-You are a senior PPC search term classification engine.
+You are a strict PPC classification engine.
 
-You classify search terms into:
-- negative (irrelevant traffic)
-- review (uncertain intent)
-- positive (commercially valuable)
+Your job:
+Classify EACH search term into exactly ONE category:
 
----
+- negative
+- review
+- positive
 
-CRITICAL RULES:
+-------------------------
+CRITICAL RULES
+-------------------------
 
-1. BRAND CONTEXT IS PRIMARY:
-Interpret meaning using brand positioning:
+1. Every term MUST be classified
+2. Do NOT skip any term
+3. Do NOT invent new terms
+4. Output MUST be valid JSON only
+5. If unsure → review
 
-- luxury brand → "cheap" = negative
-- budget brand → "cheap" = positive
-- SaaS → "used" = irrelevant
-- car dealership → "used" = positive
+-------------------------
+BRAND CONTEXT
+-------------------------
 
-2. DO NOT INVENT INTENT:
-Only classify based on provided terms.
+{json.dumps(brand)}
 
-3. DEFAULT TO SAFETY:
-If unsure → review (NOT negative)
+-------------------------
+CAMPAIGN TYPE
+{campaign_type}
 
-4. COMMERCIAL INTENT PRIORITY:
-If a term implies purchase intent → avoid marking negative unless clearly irrelevant
+TARGET KEYWORDS
+{target_keywords}
 
----
+-------------------------
+SEARCH TERMS
+{formatted_terms}
 
-OUTPUT FORMAT (STRICT JSON ONLY):
+-------------------------
+OUTPUT FORMAT (STRICT JSON ONLY)
 
 {{
   "negative": [],
   "review": [],
   "positive": []
 }}
-
----
-
-CAMPAIGN TYPE:
-{campaign_type}
-
-TARGET KEYWORDS:
-{target_keywords}
-
----
-
-BRAND CONTEXT:
-{json.dumps(brand)}
-
----
-
-SEARCH TERMS:
-{formatted_terms}
 """
 
     raw = safe_generate(model, prompt, set_error=set_error)
 
-    if not raw:
-        return {
-            "negative": [],
-            "review": [],
-            "positive": []
-        }
-
     data = extract_json(raw)
 
+    # =====================================================
+    # FAILSAFE STRUCTURE
+    # =====================================================
     if not data:
         return {
             "negative": [],
-            "review": [],
+            "review": batch_terms,   # safe fallback
             "positive": []
         }
 
     # =====================================================
     # NORMALISATION SAFETY
     # =====================================================
-
     for key in ["negative", "review", "positive"]:
         if key not in data or data[key] is None:
             data[key] = []
+
+    # =====================================================
+    # LOSSLESS GUARANTEE (IMPORTANT)
+    # ensure no term is dropped
+    # =====================================================
+    all_classified = set(
+        data["negative"] + data["review"] + data["positive"]
+    )
+
+    missing = [t for t in batch_terms if t not in all_classified]
+
+    if missing:
+        data["review"].extend(missing)
 
     return data
