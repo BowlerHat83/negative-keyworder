@@ -105,12 +105,16 @@ if st.button("Run Analysis"):
 
 
     progress = st.progress(0)
-    status = st.empty()
 
+    def run_layer(title, percent):
+        st.markdown(f"### {title}")
+        progress.progress(percent)
 
     # =====================================================
     # LAYER 2: SCRAPER
     # =====================================================
+
+with st.spinner("Scraping landing page content..."):
     status.info("Layer 2: Scraping landing pages...")
     progress.progress(10)
 
@@ -120,12 +124,11 @@ if st.button("Run Analysis"):
         landing_pages=landing_pages
     )
 
-
     # =====================================================
     # LAYER 3: BRAND INTELLIGENCE
     # =====================================================
-    status.info("Layer 3: Building brand model...")
-    progress.progress(25)
+    with st.spinner("Building brand intelligence model..."):
+    run_layer("🟣 Layer 3 — Brand Intelligence", 25)
 
     brand_model = build_brand_model(
         page_text=landing_context,
@@ -133,12 +136,13 @@ if st.button("Run Analysis"):
         campaign_type=campaign_type
     )
 
-
     # =====================================================
     # LAYER 4: PREFILTER
     # =====================================================
-    status.info("Layer 4: Prefiltering terms...")
-    progress.progress(40)
+    with st.spinner("Applying contextual prefilter..."):
+        run_layer("🟡 Layer 4 — Prefilter", 40)
+
+    auto_neg, remaining = contextual_prefilter(terms, brand_model)
 
     auto_neg, remaining = contextual_prefilter(terms, brand_model)
 
@@ -155,13 +159,15 @@ if st.button("Run Analysis"):
 
     for i, batch in enumerate(batches):
 
-        try:
-            result = classify_terms_batch(
-                model=model,
-                batch_terms=batch,
-                brand=brand_model,
-                campaign_type=campaign_type,
-                target_keywords=target_keywords
+    with st.spinner(f"Classifying batch {i+1}/{len(batches)}..."):
+        run_layer("🔴 Layer 5 — Classification", 40 + int((i+1)/len(batches)*20))
+
+        result = classify_terms_batch(
+             model=model,
+             batch_terms=batch,
+             brand=brand_model,
+             campaign_type=campaign_type,
+             target_keywords=target_keywords
             )
 
         except Exception as e:
@@ -195,8 +201,8 @@ if st.button("Run Analysis"):
     # =====================================================
     # LAYER 6: ROOT EXTRACTION
     # =====================================================
-    status.info("Layer 6: Extracting root negatives...")
-    progress.progress(80)
+    with st.spinner("Extracting root negatives..."):
+        run_layer("🟢 Layer 6 — Root Extraction", 80)
 
     roots = extract_roots_protected(
         negative_terms=layer5_data["negative"],
@@ -209,26 +215,32 @@ if st.button("Run Analysis"):
     # =====================================================
     # LAYER 7: FINAL CLASSIFICATION
     # =====================================================
-    status.info("Layer 7: Final classification...")
-    progress.progress(90)
+    with st.spinner("Final classification pass..."):
+        run_layer("⚫ Layer 7 — Final Classification", 90)
 
+    final_data = final_classification(roots, brand_model)
     final_data = final_classification(roots, brand_model)
 
 
     # =====================================================
     # LAYER 8: OUTPUT AGGREGATION
     # =====================================================
-    status.info("Layer 8: Building outputs...")
-    progress.progress(98)
+    with st.spinner("Building outputs..."):
+        run_layer("⚪ Layer 8 — Output Assembly", 98)
 
-    outputs = build_outputs(
-        brand_model=brand_model,
-        layer5_data=layer5_data,
-        layer6_roots=roots,
-        layer7_data=final_data
-    )
+        outputs = build_outputs(
+            brand_model=brand_model,
+            layer5_data={
+                "negative": negatives,
+                "review": reviews,
+                "positive": positives
+            },
+            layer6_roots=roots,
+            layer7_data=final_data
+        )    
 
-
+    progress.progress(100)
+    st.success("Analysis complete")
     # =====================================================
     # DONE
     # =====================================================
