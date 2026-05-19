@@ -9,7 +9,7 @@ try:
     from scraper import get_landing_context
     from classify import classify_terms_batch
     from prefilter import contextual_prefilter
-    from intelli import contextual_prefilter
+    from intelli import build_brand_model
     from root import extract_roots
     from finalclass import final_classification
     from output import build_outputs
