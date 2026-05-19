@@ -1,147 +1,92 @@
-import json
 import re
-import google.generativeai as genai
+from typing import List, Dict
 
 
 # =====================================================
-# SAFE GENERATION
+# NORMALISATION
 # =====================================================
-def safe_generate(model, prompt, set_error=None):
-    try:
-        res = model.generate_content(prompt)
-        return res.text.strip()
-    except Exception as e:
-
-        err = str(e)
-
-        if "429" in err or "quota" in err.lower():
-            if set_error:
-                set_error("E429", "Gemini quota exceeded")
-            return None
-
-        if set_error:
-            set_error("E500", "Final classification error")
-
-        return None
+def normalize(t: str) -> str:
+    return re.sub(r"\s+", " ", t.strip().lower())
 
 
 # =====================================================
-# JSON PARSER
+# LAYER 6: ROOT NEGATIVE EXTRACTION
 # =====================================================
-def extract_json(text: str):
-    if not text:
-        return None
-
-    try:
-        return json.loads(text)
-    except:
-        m = re.search(r"\{.*\}", text, re.DOTALL)
-        if m:
-            try:
-                return json.loads(m.group())
-            except:
-                return None
-    return None
-
-
-# =====================================================
-# LAYER 7: FINAL CLASSIFICATION ENGINE
-# =====================================================
-def final_classification(roots: list, brand_model: dict, set_error=None):
+def extract_roots_protected(
+    negative_terms: List[str],
+    review_terms: List[str],
+    positive_terms: List[str],
+    brand_model: Dict
+) -> List[str]:
 
     """
-    Input:
-        roots -> Layer 6 compressed negative roots
-        brand_model -> Layer 3 intelligence
+    Extract root negatives ONLY from negative terms.
 
-    Output:
-        structured PPC-ready dataset
+    HARD RULES:
+    - NEVER extract roots from review/positive terms
+    - NEVER extract brand-safe roots
+    - ONLY extract intent-bearing tokens from negatives
     """
 
-    model = genai.GenerativeModel("gemini-2.5-flash")
+    # -------------------------
+    # INTENT VOCAB (safe abstraction layer)
+    # -------------------------
+    intent_vocab = {
+        "job", "jobs",
+        "career", "careers",
+        "salary", "salaries",
+        "free",
+        "cheap",
+        "template", "templates",
+        "download",
+        "tutorial",
+        "guide",
+        "pdf",
+        "how"
+    }
 
-    prompt = f"""
-You are a PPC Negative Keyword Expansion Engine.
+    # -------------------------
+    # PROTECTION SETS
+    # -------------------------
 
-You will take root negative keywords and expand them into:
+    protected_terms = set(
+        normalize(t)
+        for t in (review_terms + positive_terms)
+        if t
+    )
 
-1. Final Google Ads negative keyword list
-2. AI-generated variations (synonyms, phrasing variants)
-3. Review-safe ambiguous keywords
-4. Positive-safe exclusions (do NOT negate)
+    protected_roots = set(
+        normalize(x)
+        for x in brand_model.get("safe_roots", [])
+        if x
+    )
 
--------------------------
-INPUT ROOT NEGATIVES
--------------------------
-{roots}
+    # -------------------------
+    # ROOT EXTRACTION
+    # -------------------------
+    roots = set()
 
--------------------------
-BRAND CONTEXT
--------------------------
-{json.dumps(brand_model)}
+    for term in negative_terms:
 
--------------------------
-TASK
--------------------------
+        if not term:
+            continue
 
-Generate structured output:
+        t = normalize(term)
 
-{{
-  "final_google_ads_negatives": [],
-  "ai_negative_variations": [],
-  "review_queue": [],
-  "positives": [],
-  "brand_summary": ""
-}}
+        # NEVER touch anything that overlaps review/positive context
+        if t in protected_terms:
+            continue
 
--------------------------
-RULES
--------------------------
+        words = t.split()
 
-1. Expand ONLY from root negatives
-2. Do NOT introduce unrelated industries
-3. Variations must be PPC realistic (Google Ads style)
-4. Keep review queue conservative
-5. Positives must NOT overlap with negatives
-6. Output MUST be valid JSON only
+        for w in words:
 
--------------------------
-OUTPUT FORMAT ONLY
--------------------------
-"""
+            # protect brand-defined safe roots
+            if w in protected_roots:
+                continue
 
-    raw = safe_generate(model, prompt, set_error=set_error)
+            # extract only intent-driven tokens
+            if w in intent_vocab:
+                roots.add(w)
 
-    data = extract_json(raw)
-
-    # =====================================================
-    # FALLBACK STRUCTURE
-    # =====================================================
-    if not data:
-        return {
-            "final_google_ads_negatives": [],
-            "ai_negative_variations": [],
-            "review_queue": [],
-            "positives": [],
-            "brand_summary": "Error or empty response"
-        }
-
-    # =====================================================
-    # SAFETY NORMALISATION
-    # =====================================================
-    for k in [
-        "final_google_ads_negatives",
-        "ai_negative_variations",
-        "review_queue",
-        "positives"
-    ]:
-        if k not in data or data[k] is None:
-            data[k] = []
-
-    # =====================================================
-    # DEDUPLICATION (IMPORTANT FOR ADS EXPORT)
-    # =====================================================
-    data["final_google_ads_negatives"] = list(set(data["final_google_ads_negatives"]))
-    data["ai_negative_variations"] = list(set(data["ai_negative_variations"]))
-
-    return data
+    return sorted(roots)
