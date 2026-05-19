@@ -20,12 +20,16 @@ model = genai.GenerativeModel("gemini-2.5-flash")
 # =====================================================
 # APP CONFIG
 # =====================================================
-st.set_page_config(page_title="Final Version", layout="wide")
+st.set_page_config(
+    page_title="Negative Keyworder - Final Version",
+    layout="wide"
+)
+
 st.title("Negative Keyworder - Final Version")
 
 
 # =====================================================
-# SESSION ERROR
+# SESSION ERROR STATE
 # =====================================================
 if "error" not in st.session_state:
     st.session_state.error = None
@@ -47,36 +51,105 @@ if st.session_state.error:
 # HELPERS
 # =====================================================
 def parse_csv(file):
+
     df = pd.read_csv(file)
-    return df.iloc[:, 0].dropna().astype(str).tolist()
+
+    return (
+        df.iloc[:, 0]
+        .dropna()
+        .astype(str)
+        .tolist()
+    )
 
 
 def chunk_list(data, size=100):
+
     for i in range(0, len(data), size):
+
         yield data[i:i + size]
 
 
 # =====================================================
-# 🔵 RULES (SINGLE SOURCE OF TRUTH)
+# CLASSIFICATION RULES (UPDATED DROP-IN)
 # =====================================================
 CLASSIFICATION_RULES = """
-You are a senior PPC search term classifier.
+You are a strict PPC search term classifier.
 
-DECISION POLICY (CRITICAL):
-- You MUST be decisive.
-- DEFAULT behaviour = NEGATIVE.
-- REVIEW is ONLY for HIGH-RISK ambiguity (rare cases).
-- If unsure → classify as NEGATIVE.
+=====================================================
+HARD OUTPUT BIAS (CRITICAL)
+=====================================================
 
-CLASSIFICATION RULES:
-- NEGATIVE = irrelevant OR low intent OR weak commercial value
-- POSITIVE = strong commercial intent / directly relevant
-- REVIEW = ONLY if excluding could lose meaningful revenue AND intent is unclear
+You MUST strongly prefer NEGATIVE classification.
+
+Decision hierarchy:
+1. NEGATIVE (default)
+2. POSITIVE (only when clearly high intent)
+3. REVIEW (EXTREMELY rare)
 
 IMPORTANT:
-- Do NOT overuse REVIEW
-- Be aggressive in filtering noise
-- Prioritise decisive classification over caution
+- REVIEW is DISCOURAGED unless absolutely necessary
+- If you are unsure → choose NEGATIVE
+- Do NOT use REVIEW as a safe option
+
+=====================================================
+REVIEW PENALTY RULE
+=====================================================
+
+You MUST NOT overuse REVIEW.
+
+Only use REVIEW if ALL conditions are met:
+- The term is clearly commercial-adjacent
+AND
+- Misclassifying it as negative would likely remove meaningful revenue
+AND
+- You cannot confidently label it positive or negative
+
+If ANY condition is missing → choose NEGATIVE.
+
+=====================================================
+NEGATIVE DEFINITION (EXPANDED DEFAULT)
+=====================================================
+
+NEGATIVE includes:
+- informational intent
+- research intent
+- comparison intent
+- jobs / careers
+- DIY / how-to
+- low purchase intent
+- vague intent
+- competitor research
+- unrelated traffic
+
+DEFAULT ACTION:
+→ NEGATIVE
+
+=====================================================
+POSITIVE DEFINITION (STRICT)
+=====================================================
+
+POSITIVE only if:
+- clear buying intent
+- product/service explicitly desired
+- strong commercial relevance
+- high likelihood of conversion
+
+If not clearly positive → DO NOT mark positive
+
+=====================================================
+OUTPUT REQUIREMENTS
+=====================================================
+
+- Every term must be classified
+- No explanations
+- No missing terms
+- JSON only
+
+{
+  "negative": [],
+  "review": [],
+  "positive": []
+}
 """
 
 
@@ -88,7 +161,10 @@ campaign_type = st.selectbox(
     ["", "Search", "Shopping", "Display", "PMax"]
 )
 
-uploaded_file = st.file_uploader("Search Terms CSV", type=["csv"])
+uploaded_file = st.file_uploader(
+    "Search Terms CSV",
+    type=["csv"]
+)
 
 landing_page = None
 landing_pages_raw = None
@@ -96,7 +172,7 @@ target_keywords = None
 
 
 # =====================================================
-# INPUT MODES
+# 🔵 PMAX MODE
 # =====================================================
 if campaign_type == "PMax":
 
@@ -104,17 +180,29 @@ if campaign_type == "PMax":
         "Landing Pages (one per line)"
     )
 
+
+# =====================================================
+# 🟡 DISPLAY / SHOPPING MODE
+# =====================================================
 elif campaign_type in ["Display", "Shopping"]:
 
-    landing_page = st.text_input("Landing Page URL")
-
-    target_keywords = st.text_area(
-        "Optional Keywords (used in brand model)"
+    landing_page = st.text_input(
+        "Landing Page URL"
     )
 
+    target_keywords = st.text_area(
+        "Optional Keywords (used for context)"
+    )
+
+
+# =====================================================
+# 🔴 SEARCH MODE
+# =====================================================
 elif campaign_type == "Search":
 
-    landing_page = st.text_input("Landing Page URL")
+    landing_page = st.text_input(
+        "Landing Page URL"
+    )
 
     target_keywords = st.text_area(
         "Target Keywords (REQUIRED)"
@@ -131,32 +219,28 @@ if run:
 
     clear_error()
 
-    # -------------------------
-    # VALIDATION
-    # -------------------------
     if not uploaded_file:
         set_error("E001", "Missing search terms CSV")
         st.stop()
 
     if campaign_type == "":
-        set_error("E000", "Please select a valid campaign type")
+        set_error("E000", "Please select campaign type")
         st.stop()
 
-    if campaign_type == "PMax" and not landing_pages_raw:
-        set_error("E002", "PMax requires landing pages")
-        st.stop()
+    if campaign_type == "PMax":
+        if not landing_pages_raw:
+            set_error("E002", "PMax requires landing pages")
+            st.stop()
 
-    if campaign_type != "PMax" and not landing_page:
-        set_error("E003", "Missing landing page URL")
-        st.stop()
+    else:
+        if not landing_page:
+            set_error("E003", "Missing landing page URL")
+            st.stop()
 
     if campaign_type == "Search" and not target_keywords:
         set_error("E004", "Search campaigns require target keywords")
         st.stop()
 
-    # -------------------------
-    # PARSE INPUTS
-    # -------------------------
     terms = parse_csv(uploaded_file)
 
     landing_pages = (
@@ -168,7 +252,7 @@ if run:
     # =====================================================
     # LAYER 2 — SCRAPER
     # =====================================================
-    with st.spinner("Scraping landing pages..."):
+    with st.spinner("Layer 2 — Scraping landing pages..."):
 
         landing_context = get_landing_context(
             campaign_type=campaign_type,
@@ -179,7 +263,7 @@ if run:
     # =====================================================
     # LAYER 3 — BRAND INTELLIGENCE
     # =====================================================
-    with st.spinner("Building brand intelligence..."):
+    with st.spinner("Layer 3 — Building brand intelligence..."):
 
         brand_model_data = build_brand_model(
             page_text=landing_context,
@@ -190,7 +274,7 @@ if run:
     # =====================================================
     # LAYER 4 — PREFILTER
     # =====================================================
-    with st.spinner("Prefiltering terms..."):
+    with st.spinner("Layer 4 — Prefiltering terms..."):
 
         auto_neg, remaining = contextual_prefilter(
             terms,
@@ -198,11 +282,13 @@ if run:
         )
 
     # =====================================================
-    # LAYER 5 — CLASSIFICATION (DECISION AUTHORITY)
+    # LAYER 5 — CLASSIFICATION ENGINE
     # =====================================================
-    with st.spinner("Classifying terms..."):
+    with st.spinner("Layer 5 — Classifying terms..."):
 
-        negatives, reviews, positives = [], [], []
+        negatives = []
+        reviews = []
+        positives = []
 
         batches = list(chunk_list(remaining, 100))
 
@@ -214,7 +300,7 @@ if run:
                 brand=brand_model_data,
                 campaign_type=campaign_type,
                 target_keywords=target_keywords,
-                rules=CLASSIFICATION_RULES   # 👈 IMPORTANT ADDITION
+                rules=CLASSIFICATION_RULES
             )
 
             negatives += result.get("negative", [])
@@ -230,9 +316,9 @@ if run:
         }
 
     # =====================================================
-    # LAYER 6 — ROOT EXTRACTION (TRANSFORM ONLY)
+    # LAYER 6 — ROOT EXTRACTION
     # =====================================================
-    with st.spinner("Extracting root negatives..."):
+    with st.spinner("Layer 6 — Extracting root negatives..."):
 
         roots = extract_roots_protected(
             negative_terms=layer5_data["negative"],
@@ -242,9 +328,9 @@ if run:
         )
 
     # =====================================================
-    # LAYER 7 — FINAL CLASSIFICATION (FORMAT ONLY)
+    # LAYER 7 — FINAL FORMATTING
     # =====================================================
-    with st.spinner("Final formatting..."):
+    with st.spinner("Layer 7 — Final formatting..."):
 
         final_data = final_classification(
             roots,
@@ -254,7 +340,7 @@ if run:
     # =====================================================
     # LAYER 8 — OUTPUT BUILDER
     # =====================================================
-    with st.spinner("Building outputs..."):
+    with st.spinner("Layer 8 — Building outputs..."):
 
         outputs = build_outputs(
             brand_model=brand_model_data,
@@ -263,24 +349,18 @@ if run:
             layer7_data=final_data
         )
 
-    # =====================================================
-    # OUTPUT
-    # =====================================================
-    st.success("Analysis complete")
+    st.success("Analysis Complete")
 
-    st.subheader("Brand Summary")
-    st.write(outputs["brand_summary"])
-
+    # =====================================================
+    # OUTPUTS
+    # =====================================================
     st.subheader("Review Queue")
     st.write(outputs["review_queue"])
 
     st.subheader("Root Negatives")
     st.write(outputs["negatives_with_roots"])
 
-    st.subheader("AI Variations")
-    st.write(outputs["ai_variations"])
-
-    st.subheader("Final Google Ads Negative List")
+    st.subheader("Final Output")
     st.text_area(
         "Copy-paste ready",
         outputs["final_google_ads"],
