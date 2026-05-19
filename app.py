@@ -30,11 +30,14 @@ st.title("Negative Keyworder - Final Version")
 if "error" not in st.session_state:
     st.session_state.error = None
 
+
 def set_error(code, msg):
     st.session_state.error = f"{code}: {msg}"
 
+
 def clear_error():
     st.session_state.error = None
+
 
 if st.session_state.error:
     st.error(st.session_state.error)
@@ -54,7 +57,31 @@ def chunk_list(data, size=100):
 
 
 # =====================================================
-# UI STATE MACHINE (THIS IS THE FIX)
+# 🔵 RULES (SINGLE SOURCE OF TRUTH)
+# =====================================================
+CLASSIFICATION_RULES = """
+You are a senior PPC search term classifier.
+
+DECISION POLICY (CRITICAL):
+- You MUST be decisive.
+- DEFAULT behaviour = NEGATIVE.
+- REVIEW is ONLY for HIGH-RISK ambiguity (rare cases).
+- If unsure → classify as NEGATIVE.
+
+CLASSIFICATION RULES:
+- NEGATIVE = irrelevant OR low intent OR weak commercial value
+- POSITIVE = strong commercial intent / directly relevant
+- REVIEW = ONLY if excluding could lose meaningful revenue AND intent is unclear
+
+IMPORTANT:
+- Do NOT overuse REVIEW
+- Be aggressive in filtering noise
+- Prioritise decisive classification over caution
+"""
+
+
+# =====================================================
+# UI STATE MACHINE
 # =====================================================
 campaign_type = st.selectbox(
     "Campaign Type",
@@ -69,7 +96,7 @@ target_keywords = None
 
 
 # =====================================================
-# 🔵 PMAX MODE
+# INPUT MODES
 # =====================================================
 if campaign_type == "PMax":
 
@@ -77,9 +104,6 @@ if campaign_type == "PMax":
         "Landing Pages (one per line)"
     )
 
-# =====================================================
-# 🟡 DISPLAY / SHOPPING MODE
-# =====================================================
 elif campaign_type in ["Display", "Shopping"]:
 
     landing_page = st.text_input("Landing Page URL")
@@ -88,9 +112,6 @@ elif campaign_type in ["Display", "Shopping"]:
         "Optional Keywords (used in brand model)"
     )
 
-# =====================================================
-# 🔴 SEARCH MODE (STRICT)
-# =====================================================
 elif campaign_type == "Search":
 
     landing_page = st.text_input("Landing Page URL")
@@ -111,7 +132,7 @@ if run:
     clear_error()
 
     # -------------------------
-    # VALIDATION GATE
+    # VALIDATION
     # -------------------------
     if not uploaded_file:
         set_error("E001", "Missing search terms CSV")
@@ -121,20 +142,17 @@ if run:
         set_error("E000", "Please select a valid campaign type")
         st.stop()
 
-    if campaign_type == "PMax":
-        if not landing_pages_raw:
-            set_error("E002", "PMax requires landing pages (one per line)")
-            st.stop()
+    if campaign_type == "PMax" and not landing_pages_raw:
+        set_error("E002", "PMax requires landing pages")
+        st.stop()
 
-    else:
-        if not landing_page:
-            set_error("E003", "Missing landing page URL")
-            st.stop()
+    if campaign_type != "PMax" and not landing_page:
+        set_error("E003", "Missing landing page URL")
+        st.stop()
 
     if campaign_type == "Search" and not target_keywords:
         set_error("E004", "Search campaigns require target keywords")
         st.stop()
-
 
     # -------------------------
     # PARSE INPUTS
@@ -147,7 +165,6 @@ if run:
         else None
     )
 
-
     # =====================================================
     # LAYER 2 — SCRAPER
     # =====================================================
@@ -159,29 +176,29 @@ if run:
             landing_pages=landing_pages
         )
 
-
     # =====================================================
     # LAYER 3 — BRAND INTELLIGENCE
     # =====================================================
     with st.spinner("Building brand intelligence..."):
 
-        brand_model = build_brand_model(
+        brand_model_data = build_brand_model(
             page_text=landing_context,
             target_keywords=target_keywords,
             campaign_type=campaign_type
         )
-
 
     # =====================================================
     # LAYER 4 — PREFILTER
     # =====================================================
     with st.spinner("Prefiltering terms..."):
 
-        auto_neg, remaining = contextual_prefilter(terms, brand_model)
-
+        auto_neg, remaining = contextual_prefilter(
+            terms,
+            brand_model_data
+        )
 
     # =====================================================
-    # LAYER 5 — CLASSIFICATION
+    # LAYER 5 — CLASSIFICATION (DECISION AUTHORITY)
     # =====================================================
     with st.spinner("Classifying terms..."):
 
@@ -194,15 +211,15 @@ if run:
             result = classify_terms_batch(
                 model=model,
                 batch_terms=batch,
-                brand=brand_model,
+                brand=brand_model_data,
                 campaign_type=campaign_type,
-                target_keywords=target_keywords
+                target_keywords=target_keywords,
+                rules=CLASSIFICATION_RULES   # 👈 IMPORTANT ADDITION
             )
 
             negatives += result.get("negative", [])
             reviews += result.get("review", [])
             positives += result.get("positive", [])
-
 
         negatives += auto_neg
 
@@ -212,9 +229,8 @@ if run:
             "positive": positives
         }
 
-
     # =====================================================
-    # LAYER 6 — ROOTS
+    # LAYER 6 — ROOT EXTRACTION (TRANSFORM ONLY)
     # =====================================================
     with st.spinner("Extracting root negatives..."):
 
@@ -222,40 +238,36 @@ if run:
             negative_terms=layer5_data["negative"],
             review_terms=layer5_data["review"],
             positive_terms=layer5_data["positive"],
-            brand_model=brand_model
+            brand_model=brand_model_data
         )
 
+    # =====================================================
+    # LAYER 7 — FINAL CLASSIFICATION (FORMAT ONLY)
+    # =====================================================
+    with st.spinner("Final formatting..."):
+
+        final_data = final_classification(
+            roots,
+            brand_model_data
+        )
 
     # =====================================================
-    # LAYER 7 — FINAL CLASSIFICATION
-    # =====================================================
-    with st.spinner("Final classification..."):
-
-        final_data = final_classification(roots, brand_model)
-
-
-    # =====================================================
-    # LAYER 8 — OUTPUT
+    # LAYER 8 — OUTPUT BUILDER
     # =====================================================
     with st.spinner("Building outputs..."):
 
         outputs = build_outputs(
-            brand_model=brand_model,
+            brand_model=brand_model_data,
             layer5_data=layer5_data,
             layer6_roots=roots,
             layer7_data=final_data
         )
 
-
     # =====================================================
-    # DONE
+    # OUTPUT
     # =====================================================
     st.success("Analysis complete")
 
-
-    # =====================================================
-    # OUTPUT UI
-    # =====================================================
     st.subheader("Brand Summary")
     st.write(outputs["brand_summary"])
 
