@@ -3,37 +3,32 @@ import pandas as pd
 import google.generativeai as genai
 
 # =====================================================
-# LAYERS (IMPORTS MUST MATCH YOUR FILES EXACTLY)
+# LAYERS
 # =====================================================
 from scraper import get_landing_context
-from intelli import build_brand_model          # Layer 3
-from prefilter import contextual_prefilter     # Layer 4
-from classify import classify_terms_batch      # Layer 5
-from root import extract_roots_protected       # Layer 6
-from finalclass import final_classification    # Layer 7
-from output import build_outputs               # Layer 8
-
+from intelli import build_brand_model
+from prefilter import contextual_prefilter
+from classify import classify_terms_batch
+from root import extract_roots_protected
+from finalclass import final_classification
+from output import build_outputs
 
 # =====================================================
 # GEMINI MODEL
 # =====================================================
 model = genai.GenerativeModel("gemini-2.5-flash")
 
-
 # =====================================================
-# ERROR HANDLING
+# SESSION STATE ERROR HANDLING
 # =====================================================
-def set_error(code, msg):
-    st.session_state.error = f"{code}: {msg}"
-
-
-def clear_error():
-    st.session_state.error = None
-
-
 if "error" not in st.session_state:
     st.session_state.error = None
 
+def set_error(code, msg):
+    st.session_state.error = f"{code}: {msg}"
+
+def clear_error():
+    st.session_state.error = None
 
 # =====================================================
 # CSV PARSER
@@ -42,9 +37,8 @@ def parse_csv(file):
     df = pd.read_csv(file)
     return df.iloc[:, 0].dropna().astype(str).tolist()
 
-
 # =====================================================
-# UI CONFIG
+# UI
 # =====================================================
 st.set_page_config(page_title="Negative Keyworder V4", layout="wide")
 st.title("Negative Keyworder V4")
@@ -52,17 +46,12 @@ st.title("Negative Keyworder V4")
 if st.session_state.error:
     st.error(st.session_state.error)
 
-
-# =====================================================
-# INPUTS
-# =====================================================
 campaign_type = st.selectbox(
     "Campaign Type",
     ["Search", "Shopping", "Display", "PMax"]
 )
 
 uploaded_file = st.file_uploader("Search Terms CSV", type=["csv"])
-
 landing_page = st.text_input("Landing Page URL")
 
 landing_pages_raw = ""
@@ -71,16 +60,17 @@ if campaign_type == "PMax":
 
 target_keywords = st.text_area("Target Keywords (optional)")
 
+progress = st.progress(0)
 
 # =====================================================
-# RUN BUTTON
+# RUN
 # =====================================================
 if st.button("Run Analysis"):
 
     clear_error()
 
     # -------------------------
-    # VALIDATION (Layer 1 gate)
+    # VALIDATION
     # -------------------------
     if not uploaded_file:
         set_error("E001", "Missing search terms CSV")
@@ -90,166 +80,130 @@ if st.button("Run Analysis"):
         set_error("E002", "Missing landing page URL")
         st.stop()
 
-    if campaign_type == "PMax" and not landing_pages_raw.strip():
-        set_error("E003", "Missing PMax landing pages")
-        st.stop()
-
-    # -------------------------
-    # PARSE INPUTS
-    # -------------------------
-    terms = parse_csv(uploaded_file)
-
     landing_pages = [
         x.strip() for x in landing_pages_raw.split("\n") if x.strip()
     ] if campaign_type == "PMax" else None
 
+    # =====================================================
+    # LAYER 2 — SCRAPER
+    # =====================================================
+    with st.spinner("Layer 2 — Scraping landing pages..."):
+        progress.progress(10)
 
-    progress = st.progress(0)
-
-    def run_layer(title, percent):
-        st.markdown(f"### {title}")
-        progress.progress(percent)
+        landing_context = get_landing_context(
+            campaign_type=campaign_type,
+            landing_page=landing_page,
+            landing_pages=landing_pages
+        )
 
     # =====================================================
-    # LAYER 2: SCRAPER
+    # LAYER 3 — BRAND INTELLIGENCE
     # =====================================================
+    with st.spinner("Layer 3 — Brand Intelligence..."):
+        progress.progress(25)
 
-with st.spinner("Scraping landing page content..."):
-    status.info("Layer 2: Scraping landing pages...")
-    progress.progress(10)
-
-    landing_context = get_landing_context(
-        campaign_type=campaign_type,
-        landing_page=landing_page,
-        landing_pages=landing_pages
-    )
+        brand_model = build_brand_model(
+            page_text=landing_context,
+            target_keywords=target_keywords,
+            campaign_type=campaign_type
+        )
 
     # =====================================================
-    # LAYER 3: BRAND INTELLIGENCE
+    # LAYER 4 — PREFILTER
     # =====================================================
-    with st.spinner("Building brand intelligence model..."):
-    run_layer("🟣 Layer 3 — Brand Intelligence", 25)
+    with st.spinner("Layer 4 — Prefilter..."):
+        progress.progress(40)
 
-    brand_model = build_brand_model(
-        page_text=landing_context,
-        target_keywords=target_keywords,
-        campaign_type=campaign_type
-    )
+        terms = parse_csv(uploaded_file)
+        auto_neg, remaining = contextual_prefilter(terms, brand_model)
 
     # =====================================================
-    # LAYER 4: PREFILTER
+    # LAYER 5 — CLASSIFICATION
     # =====================================================
-    with st.spinner("Applying contextual prefilter..."):
-        run_layer("🟡 Layer 4 — Prefilter", 40)
+    with st.spinner("Layer 5 — Classification..."):
+        progress.progress(55)
 
-    auto_neg, remaining = contextual_prefilter(terms, brand_model)
+        negatives, reviews, positives = [], [], []
 
-    auto_neg, remaining = contextual_prefilter(terms, brand_model)
+        batches = [remaining[i:i+100] for i in range(0, len(remaining), 100)]
 
+        for i, batch in enumerate(batches):
 
-    # =====================================================
-    # LAYER 5: CLASSIFICATION
-    # =====================================================
-    status.info("Layer 5: Classifying terms...")
-    progress.progress(55)
+            try:
+                result = classify_terms_batch(
+                    model=model,
+                    batch_terms=batch,
+                    brand=brand_model,
+                    campaign_type=campaign_type,
+                    target_keywords=target_keywords
+                )
 
-    negatives, reviews, positives = [], [], []
+            except Exception as e:
+                err = str(e)
 
-    batches = [remaining[i:i+100] for i in range(0, len(remaining), 100)]
+                if "429" in err or "quota" in err.lower():
+                    set_error("E429", "Gemini quota exceeded")
+                else:
+                    set_error("E500", "Classification error")
 
-    for i, batch in enumerate(batches):
+                st.stop()
 
-    with st.spinner(f"Classifying batch {i+1}/{len(batches)}..."):
-        run_layer("🔴 Layer 5 — Classification", 40 + int((i+1)/len(batches)*20))
+            negatives += result.get("negative", [])
+            reviews += result.get("review", [])
+            positives += result.get("positive", [])
 
-        result = classify_terms_batch(
-             model=model,
-             batch_terms=batch,
-             brand=brand_model,
-             campaign_type=campaign_type,
-             target_keywords=target_keywords
-            )
+            progress.progress(55 + int((i + 1) / max(len(batches), 1) * 20))
 
-        except Exception as e:
-            err = str(e)
+        negatives += auto_neg
 
-            if "429" in err or "quota" in err.lower():
-                set_error("E429", "Gemini quota exceeded")
-            else:
-                set_error("E500", "Classification error")
-
-            st.stop()
-
-        negatives += result.get("negative", [])
-        reviews += result.get("review", [])
-        positives += result.get("positive", [])
-
-        progress.progress(55 + int((i + 1) / max(len(batches), 1) * 20))
-
-
-    # merge prefilter negatives
-    negatives += auto_neg
-
-
-    layer5_data = {
-        "negative": negatives,
-        "review": reviews,
-        "positive": positives
-    }
-
+        layer5_data = {
+            "negative": negatives,
+            "review": reviews,
+            "positive": positives
+        }
 
     # =====================================================
-    # LAYER 6: ROOT EXTRACTION
+    # LAYER 6 — ROOT EXTRACTION
     # =====================================================
-    with st.spinner("Extracting root negatives..."):
-        run_layer("🟢 Layer 6 — Root Extraction", 80)
+    with st.spinner("Layer 6 — Root extraction..."):
+        progress.progress(80)
 
-    roots = extract_roots_protected(
-        negative_terms=layer5_data["negative"],
-        review_terms=layer5_data["review"],
-        positive_terms=layer5_data["positive"],
-        brand_model=brand_model
-    )
-
-
-    # =====================================================
-    # LAYER 7: FINAL CLASSIFICATION
-    # =====================================================
-    with st.spinner("Final classification pass..."):
-        run_layer("⚫ Layer 7 — Final Classification", 90)
-
-    final_data = final_classification(roots, brand_model)
-    final_data = final_classification(roots, brand_model)
-
+        roots = extract_roots_protected(
+            negative_terms=layer5_data["negative"],
+            review_terms=layer5_data["review"],
+            positive_terms=layer5_data["positive"],
+            brand_model=brand_model
+        )
 
     # =====================================================
-    # LAYER 8: OUTPUT AGGREGATION
+    # LAYER 7 — FINAL CLASSIFICATION
     # =====================================================
-    with st.spinner("Building outputs..."):
-        run_layer("⚪ Layer 8 — Output Assembly", 98)
+    with st.spinner("Layer 7 — Final classification..."):
+        progress.progress(90)
+
+        final_data = final_classification(roots, brand_model)
+
+    # =====================================================
+    # LAYER 8 — OUTPUT
+    # =====================================================
+    with st.spinner("Layer 8 — Output generation..."):
+        progress.progress(98)
 
         outputs = build_outputs(
             brand_model=brand_model,
-            layer5_data={
-                "negative": negatives,
-                "review": reviews,
-                "positive": positives
-            },
+            layer5_data=layer5_data,
             layer6_roots=roots,
             layer7_data=final_data
-        )    
+        )
 
+    # =====================================================
+    # COMPLETE
+    # =====================================================
     progress.progress(100)
     st.success("Analysis complete")
-    # =====================================================
-    # DONE
-    # =====================================================
-    progress.progress(100)
-    status.success("Analysis complete")
-
 
     # =====================================================
-    # UI OUTPUTS (5 STRUCTURED OUTPUTS)
+    # OUTPUT UI
     # =====================================================
     st.subheader("1. Brand Summary")
     st.write(outputs["brand_summary"])
