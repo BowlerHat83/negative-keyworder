@@ -1,70 +1,147 @@
+import json
 import re
-from typing import List, Dict
+import google.generativeai as genai
 
 
 # =====================================================
-# NORMALISATION
+# SAFE GENERATION
 # =====================================================
-def normalize(text: str) -> str:
-    return re.sub(r"\s+", " ", text.strip().lower())
+def safe_generate(model, prompt, set_error=None):
+    try:
+        res = model.generate_content(prompt)
+        return res.text.strip()
+    except Exception as e:
+
+        err = str(e)
+
+        if "429" in err or "quota" in err.lower():
+            if set_error:
+                set_error("E429", "Gemini quota exceeded")
+            return None
+
+        if set_error:
+            set_error("E500", "Final classification error")
+
+        return None
 
 
 # =====================================================
-# LAYER 6: ROOT NEGATIVE CONSOLIDATION
+# JSON PARSER
 # =====================================================
-def extract_roots_protected(
-    negative_terms: List[str],
-    review_terms: List[str],
-    positive_terms: List[str],
-    brand_model: Dict
-):
+def extract_json(text: str):
+    if not text:
+        return None
+
+    try:
+        return json.loads(text)
+    except:
+        m = re.search(r"\{.*\}", text, re.DOTALL)
+        if m:
+            try:
+                return json.loads(m.group())
+            except:
+                return None
+    return None
+
+
+# =====================================================
+# LAYER 7: FINAL CLASSIFICATION ENGINE
+# =====================================================
+def final_classification(roots: list, brand_model: dict, set_error=None):
 
     """
-    Layer 6:
-    Converts negative search terms into ROOT negative keywords
-    ONLY if they do NOT conflict with review/positive intent.
+    Input:
+        roots -> Layer 6 compressed negative roots
+        brand_model -> Layer 3 intelligence
+
+    Output:
+        structured PPC-ready dataset
     """
 
+    model = genai.GenerativeModel("gemini-2.5-flash")
+
+    prompt = f"""
+You are a PPC Negative Keyword Expansion Engine.
+
+You will take root negative keywords and expand them into:
+
+1. Final Google Ads negative keyword list
+2. AI-generated variations (synonyms, phrasing variants)
+3. Review-safe ambiguous keywords
+4. Positive-safe exclusions (do NOT negate)
+
+-------------------------
+INPUT ROOT NEGATIVES
+-------------------------
+{roots}
+
+-------------------------
+BRAND CONTEXT
+-------------------------
+{json.dumps(brand_model)}
+
+-------------------------
+TASK
+-------------------------
+
+Generate structured output:
+
+{{
+  "final_google_ads_negatives": [],
+  "ai_negative_variations": [],
+  "review_queue": [],
+  "positives": [],
+  "brand_summary": ""
+}}
+
+-------------------------
+RULES
+-------------------------
+
+1. Expand ONLY from root negatives
+2. Do NOT introduce unrelated industries
+3. Variations must be PPC realistic (Google Ads style)
+4. Keep review queue conservative
+5. Positives must NOT overlap with negatives
+6. Output MUST be valid JSON only
+
+-------------------------
+OUTPUT FORMAT ONLY
+-------------------------
+"""
+
+    raw = safe_generate(model, prompt, set_error=set_error)
+
+    data = extract_json(raw)
+
     # =====================================================
-    # BUILD PROTECTED VOCAB (NO NEGATION ALLOWED)
+    # FALLBACK STRUCTURE
     # =====================================================
-    protected_tokens = set()
-
-    for t in review_terms + positive_terms:
-        for w in normalize(t).split():
-            protected_tokens.add(w)
-
-    # =====================================================
-    # BRAND-SAFE ROOTS (ALWAYS PROTECTED)
-    # =====================================================
-    safe_roots = set(
-        normalize(x) for x in brand_model.get("safe_roots", [])
-    )
+    if not data:
+        return {
+            "final_google_ads_negatives": [],
+            "ai_negative_variations": [],
+            "review_queue": [],
+            "positives": [],
+            "brand_summary": "Error or empty response"
+        }
 
     # =====================================================
-    # RESULT SET
+    # SAFETY NORMALISATION
     # =====================================================
-    roots = set()
+    for k in [
+        "final_google_ads_negatives",
+        "ai_negative_variations",
+        "review_queue",
+        "positives"
+    ]:
+        if k not in data or data[k] is None:
+            data[k] = []
 
     # =====================================================
-    # EXTRACT FROM NEGATIVES ONLY
+    # DEDUPLICATION (IMPORTANT FOR ADS EXPORT)
     # =====================================================
-    for term in negative_terms:
+    data["final_google_ads_negatives"] = list(set(data["final_google_ads_negatives"]))
+    data["ai_negative_variations"] = list(set(data["ai_negative_variations"]))
 
-        words = normalize(term).split()
-
-        for w in words:
-
-            # skip brand-protected words
-            if w in safe_roots:
-                continue
-
-            # CRITICAL RULE:
-            # do not extract anything that appears in review/positive context
-            if w in protected_tokens:
-                continue
-
-            # valid root negative
-            roots.add(w)
-
-    return sorted(roots)
+    return data
