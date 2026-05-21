@@ -1,5 +1,6 @@
 import json
 import re
+from typing import List, Dict, Any
 
 """
 This module is the ONLY classification engine.
@@ -16,13 +17,11 @@ No downstream module may override outputs.
 # SAFE GENERATION WRAPPER
 # =====================================================
 def safe_generate(model, prompt, set_error=None):
-
     try:
         response = model.generate_content(prompt)
         return response.text.strip()
 
     except Exception as e:
-
         err = str(e)
 
         if "429" in err or "quota" in err.lower():
@@ -40,7 +39,6 @@ def safe_generate(model, prompt, set_error=None):
 # JSON PARSER
 # =====================================================
 def extract_json(text: str):
-
     if not text:
         return None
 
@@ -58,7 +56,7 @@ def extract_json(text: str):
 
 
 # =====================================================
-# CLASSIFICATION ENGINE (IMPROVED STABILITY LAYER)
+# CLASSIFICATION ENGINE
 # =====================================================
 def classify_terms_batch(
     model,
@@ -74,90 +72,45 @@ def classify_terms_batch(
 
     formatted_terms = "\n".join(f"- {t}" for t in batch_terms)
 
-    # =====================================================
-    # ENHANCED PROMPT DISCIPLINE
-    # (key change: removes ambiguity clustering + enforces separation pressure)
-    # =====================================================
     prompt = f"""
 You are a high-precision PPC search term classifier.
 
-Your job is to assign each term to ONE category:
+Assign each term to exactly ONE category:
 - negative
 - review
 - positive
 
 Return ONLY valid JSON.
 
-========================
-OUTPUT FORMAT (STRICT)
-========================
 {{
   "negative": [],
   "review": [],
   "positive": []
 }}
 
-========================
-CLASSIFICATION RULES
-========================
-
+RULES:
 {rules}
 
-========================
-CRITICAL BEHAVIOURAL FIXES
-========================
-
-1. DO NOT cluster uncertainty into REVIEW
-   - REVIEW is ONLY for true ambiguity between NEGATIVE and POSITIVE
-
-2. Avoid neutral scoring behaviour
-   - You must choose direction unless truly unclear
-
-3. NEGATIVE is NOT default in output
-   - It is only default in uncertainty, not behaviour
-
-4. REVIEW BAND RULE
-   - Use REVIEW ONLY if:
-     - term could realistically be BOTH commercial and non-commercial
-     - AND brand context does not clearly resolve it
-
-5. POSITIVE RULE
-   - If any strong commercial intent exists → prefer POSITIVE over REVIEW
-
-========================
-BRAND CONTEXT
-========================
+BRAND CONTEXT:
 {json.dumps(brand, indent=2)}
 
-========================
-CAMPAIGN TYPE
-========================
+CAMPAIGN TYPE:
 {campaign_type}
 
-========================
-TARGET KEYWORDS
-========================
+TARGET KEYWORDS:
 {target_keywords}
 
-========================
-SEARCH TERMS
-========================
+SEARCH TERMS:
 {formatted_terms}
 
-========================
-HARD OUTPUT REQUIREMENTS
-========================
-- Every term must appear in exactly ONE category
-- No explanations
-- JSON only
+No explanations. JSON only.
 """
 
     raw = safe_generate(model, prompt)
-
     data = extract_json(raw)
 
     # =====================================================
-    # FAILSAFE (NO LOSS GUARANTEE)
+    # FAILSAFE
     # =====================================================
     if not data:
         return {
@@ -166,45 +119,31 @@ HARD OUTPUT REQUIREMENTS
             "positive": []
         }
 
-    # =====================================================
-    # NORMALISATION SAFETY
-    # =====================================================
     data.setdefault("negative", [])
     data.setdefault("review", [])
     data.setdefault("positive", [])
 
     # =====================================================
-    # LOSSLESS GUARANTEE (CRITICAL)
-    # ensures no silent drops
+    # LOSSLESS GUARANTEE
     # =====================================================
-    classified = set(
-        data["negative"]
-        + data["review"]
-        + data["positive"]
-    )
-
+    classified = set(data["negative"] + data["review"] + data["positive"])
     missing = [t for t in batch_terms if t not in classified]
 
-    # IMPORTANT CHANGE:
-    # missing terms go to REVIEW first, NOT NEGATIVE
-    # (prevents artificial bias inflation)
     if missing:
         data["review"].extend(missing)
 
     # =====================================================
-    # DEDUPLICATION (ORDER PRESERVED)
+    # DEDUP
     # =====================================================
     for k in ["negative", "review", "positive"]:
         data[k] = list(dict.fromkeys(data[k]))
 
     # =====================================================
-    # FINAL STABILITY RULE
-    # prevent REVIEW explosion
+    # REVIEW SAFETY CAP
     # =====================================================
     if len(data["review"]) > len(batch_terms) * 0.6:
-        # fallback safety: push weak review back to negative
-        overflow = data["review"][int(len(batch_terms)*0.6):]
-        data["review"] = data["review"][:int(len(batch_terms)*0.6)]
+        overflow = data["review"][int(len(batch_terms) * 0.6):]
+        data["review"] = data["review"][:int(len(batch_terms) * 0.6)]
         data["negative"].extend(overflow)
 
     return data
