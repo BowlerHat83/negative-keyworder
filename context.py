@@ -1,5 +1,5 @@
 # =====================================================
-# CONTEXT MODULE (BRAND INTELLIGENCE + PREFILTER)
+# CONTEXT MODULE (BRAND INTELLIGENCE + PREFILTER v2)
 # =====================================================
 import re
 import json
@@ -7,7 +7,7 @@ import google.generativeai as genai
 from typing import List, Tuple, Dict, Any
 
 # =====================================================
-# MODEL INIT (FIX #1 — CRITICAL)
+# MODEL INIT
 # =====================================================
 model = genai.GenerativeModel("gemini-2.5-flash")
 
@@ -26,19 +26,17 @@ def safe_generate(prompt: str):
 
 
 # =====================================================
-# JSON PARSER (ROBUST FIX)
+# JSON PARSER (ROBUST)
 # =====================================================
 def extract_json(text: str):
     if not text:
         return None
 
-    # direct parse
     try:
         return json.loads(text)
     except Exception:
         pass
 
-    # extract fenced JSON
     match = re.search(r"\{.*\}", text, re.DOTALL)
     if match:
         try:
@@ -50,36 +48,54 @@ def extract_json(text: str):
 
 
 # =====================================================
-# BRAND MODEL BUILDER (IMPROVED PROMPT)
+# BRAND CONTEXT BUILDER (IMPROVED INFERENCE ENGINE)
 # =====================================================
 def build_context(page_text: str, target_keywords: str, campaign_type: str) -> Dict[str, Any]:
 
     prompt = f"""
 You are a PPC Brand Intelligence Engine.
 
-Your job is to extract structured brand intelligence from website content.
+You are NOT guessing.
+You are extracting evidence-based brand signals from website content.
 
-IMPORTANT:
-- Return valid JSON only
-- Do not wrap in markdown
-- Do not include commentary
+=====================================================
+CRITICAL RULES
+=====================================================
+1. Prefer explicit signals over inference
+2. If pricing language exists, classify it
+3. If no evidence exists, use "unknown" (do NOT hallucinate)
+4. Be consistent, not creative
+5. Output MUST be valid JSON only
 
-OUTPUT FORMAT:
+=====================================================
+PRICE INFERENCE RULES
+=====================================================
+- "cheap", "discount", "affordable", "budget" → low price positioning
+- "premium", "enterprise", "custom pricing" → high price positioning
+- "book a demo", "contact sales" → B2B / high intent / lead gen
+- "buy now", "add to cart" → ecommerce transactional
+
+=====================================================
+OUTPUT FORMAT
+=====================================================
 {{
-  "positioning": ["..."],
-  "price_positioning": ["..."],
+  "positioning": [],
+  "price_positioning": [],
   "intent_profile": {{
     "commercial": "high | medium | low",
     "informational": "high | medium | low",
     "lead_generation": "high | medium | low"
   }},
-  "core_offerings": ["..."],
-  "safe_roots": ["..."],
-  "risk_terms": ["..."],
-  "low_value_intents": ["..."],
-  "negative_bias_rules": ["..."]
+  "core_offerings": [],
+  "safe_roots": [],
+  "risk_terms": [],
+  "low_value_intents": [],
+  "negative_bias_rules": []
 }}
 
+=====================================================
+INPUT CONTEXT
+=====================================================
 CAMPAIGN TYPE:
 {campaign_type}
 
@@ -94,7 +110,7 @@ PAGE CONTENT:
     data = extract_json(raw)
 
     # =====================================================
-    # FALLBACK FIX (CRITICAL — PREVENT EMPTY OUTPUTS)
+    # HARD FALLBACK (PREVENT EMPTY OR BROKEN OUTPUTS)
     # =====================================================
     if not data:
         return {
@@ -105,7 +121,7 @@ PAGE CONTENT:
                 "informational": "medium",
                 "lead_generation": "medium"
             },
-            "core_offerings": ["unable to extract — fallback active"],
+            "core_offerings": ["unavailable"],
             "safe_roots": [],
             "risk_terms": [],
             "low_value_intents": [],
@@ -115,24 +131,35 @@ PAGE CONTENT:
     # =====================================================
     # SAFE NORMALISATION
     # =====================================================
-    defaults = {
-        "positioning": [],
-        "price_positioning": [],
-        "core_offerings": [],
-        "safe_roots": [],
-        "risk_terms": [],
-        "low_value_intents": [],
-        "negative_bias_rules": []
-    }
+    keys = [
+        "positioning",
+        "price_positioning",
+        "core_offerings",
+        "safe_roots",
+        "risk_terms",
+        "low_value_intents",
+        "negative_bias_rules"
+    ]
 
-    for k, v in defaults.items():
-        data.setdefault(k, v)
+    for k in keys:
+        data.setdefault(k, [])
 
     data.setdefault("intent_profile", {
         "commercial": "medium",
         "informational": "medium",
         "lead_generation": "medium"
     })
+
+    # =====================================================
+    # POST-PROCESS FIX: ENSURE MINIMUM SIGNAL QUALITY
+    # =====================================================
+
+    # prevent totally empty brand outputs
+    if len(data.get("positioning", [])) == 0:
+        data["positioning"] = ["not explicitly stated on page"]
+
+    if len(data.get("core_offerings", [])) == 0:
+        data["core_offerings"] = ["service/product details unclear from source"]
 
     return data
 
@@ -145,7 +172,7 @@ def normalize(text: str) -> str:
 
 
 # =====================================================
-# PREFILTER ENGINE (UNCHANGED LOGIC, SAFE FIXES)
+# PREFILTER ENGINE (SAFE + SLIGHTLY STRONGER LOGIC)
 # =====================================================
 def contextual_prefilter(
     terms: List[str],
@@ -175,10 +202,12 @@ def contextual_prefilter(
         for rule in bias_rules:
             r = normalize(rule)
 
-            if "cheap" in r and "luxury" in positioning:
+            # budget vs luxury mismatch
+            if "cheap" in r and any(p in positioning for p in ["premium", "luxury"]):
                 if "cheap" in t:
                     return True
 
+            # free intent suppression for high commercial brands
             if "free" in r and intent_profile.get("commercial") == "high":
                 if "free" in t:
                     return True
