@@ -113,33 +113,36 @@ elif campaign_type == "Search":
 
 
 # =====================================================
-# BRAND CONTEXT FORMATTER (NEW)
+# BRAND CONTEXT FORMATTER (USER FRIENDLY FIXED)
 # =====================================================
 def format_brand_context(ctx: dict) -> str:
     if not ctx:
         return "⚠️ No brand context generated."
 
     def list_block(title, items):
-        if not items:
+        items = items or []
+        if len(items) == 0:
             return f"### {title}\n- None"
         return f"### {title}\n" + "\n".join(f"- {x}" for x in items)
+
+    intent = ctx.get("intent_profile") or {}
 
     return f"""
 ## Brand Summary
 
 ### Positioning
-{ctx.get("positioning", ["Unknown"])}
+- {", ".join(ctx.get("positioning", ["Unknown"]))}
 
 ### Core Offerings
 {list_block("Core Offerings", ctx.get("core_offerings", []))}
 
 ### Price Positioning
-{ctx.get("price_positioning", ["Unknown"])}
+- {", ".join(ctx.get("price_positioning", ["Unknown"]))}
 
 ### Intent Profile
-- Commercial: {ctx.get("intent_profile", {}).get("commercial", "unknown")}
-- Informational: {ctx.get("intent_profile", {}).get("informational", "unknown")}
-- Lead Gen: {ctx.get("intent_profile", {}).get("lead_generation", "unknown")}
+- Commercial: {intent.get("commercial", "unknown")}
+- Informational: {intent.get("informational", "unknown")}
+- Lead Gen: {intent.get("lead_generation", "unknown")}
 
 ### Safe Roots
 {list_block("Safe Roots", ctx.get("safe_roots", []))}
@@ -150,7 +153,7 @@ def format_brand_context(ctx: dict) -> str:
 
 
 # =====================================================
-# MAIN ACTION (SINGLE BUTTON FLOW)
+# MAIN ACTION
 # =====================================================
 if st.button("Build & Run Audit"):
 
@@ -171,12 +174,11 @@ if st.button("Build & Run Audit"):
     st.session_state.search_terms_cache = terms
 
     # -------------------------
-    # LANDING CONTEXT
+    # LANDING CONTEXT (SAFE)
     # -------------------------
-    landing_pages = (
-        [x.strip() for x in landing_pages_raw.split("\n") if x.strip()]
-        if landing_pages_raw else None
-    )
+    landing_pages = None
+    if landing_pages_raw:
+        landing_pages = [x.strip() for x in landing_pages_raw.split("\n") if x.strip()]
 
     with st.spinner("Scraping landing pages..."):
         landing_context = get_landing_context(
@@ -185,18 +187,22 @@ if st.button("Build & Run Audit"):
             landing_pages=landing_pages
         )
 
+    if not landing_context:
+        landing_context = "No landing page content could be extracted."
+
     # -------------------------
-    # BRAND CONTEXT (AUTO)
+    # BRAND CONTEXT (IMPROVED STABILITY)
     # -------------------------
     with st.spinner("Building brand context..."):
         brand_model_data = build_context(
             page_text=landing_context,
-            target_keywords=target_keywords,
+            target_keywords=target_keywords or "",
             campaign_type=campaign_type
         )
 
     st.session_state.brand_data = brand_model_data
 
+    st.subheader("Brand Context")
     st.markdown(format_brand_context(brand_model_data))
 
     # -------------------------
@@ -212,7 +218,7 @@ if st.button("Build & Run Audit"):
                 batch_terms=batch,
                 brand=brand_model_data,
                 campaign_type=campaign_type,
-                target_keywords=target_keywords,
+                target_keywords=target_keywords or "",
                 rules=CLASSIFICATION_RULES
             )
 
@@ -253,7 +259,7 @@ if st.button("Build & Run Audit"):
     # -------------------------
     st.success("Analysis Complete")
 
-    with st.expander("Brand Summary"):
+    with st.expander("Brand Summary (Expanded)"):
         st.markdown(format_brand_context(brand_model_data))
 
     col1, col2, col3 = st.columns(3)
