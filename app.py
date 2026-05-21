@@ -35,32 +35,14 @@ st.title("Negative Keyworder")
 # =====================================================
 # SESSION STATE
 # =====================================================
-if "error" not in st.session_state:
-    st.session_state.error = None
-
 if "brand_data" not in st.session_state:
     st.session_state.brand_data = None
-
-if "brand_edited" not in st.session_state:
-    st.session_state.brand_edited = None
-
-if "brand_confirmed" not in st.session_state:
-    st.session_state.brand_confirmed = False
 
 if "search_terms_cache" not in st.session_state:
     st.session_state.search_terms_cache = None
 
-
-def set_error(code, msg):
-    st.session_state.error = f"{code}: {msg}"
-
-
-def clear_error():
-    st.session_state.error = None
-
-
-if st.session_state.error:
-    st.error(st.session_state.error)
+if "brand_confirmed" not in st.session_state:
+    st.session_state.brand_confirmed = False
 
 
 # =====================================================
@@ -76,8 +58,43 @@ def chunk_list(data, size=100):
         yield data[i:i + size]
 
 
+def format_brand_context(ctx: dict) -> str:
+    if not ctx:
+        return "No brand context available."
+
+    def block(title, items):
+        if not items:
+            return "None"
+        return "\n".join([f"- {x}" for x in items])
+
+    return f"""
+BRAND SUMMARY
+=============
+
+Positioning:
+- {", ".join(ctx.get("positioning", [])) or "Unknown"}
+
+Price Positioning:
+- {", ".join(ctx.get("price_positioning", [])) or "Unknown"}
+
+Intent Profile:
+- Commercial: {ctx.get("intent_profile", {}).get("commercial", "unknown")}
+- Informational: {ctx.get("intent_profile", {}).get("informational", "unknown")}
+- Lead Generation: {ctx.get("intent_profile", {}).get("lead_generation", "unknown")}
+
+Core Offerings:
+{block("Core Offerings", ctx.get("core_offerings", []))}
+
+Safe Roots:
+{block("Safe Roots", ctx.get("safe_roots", []))}
+
+Risk Terms:
+{block("Risk Terms", ctx.get("risk_terms", []))}
+"""
+
+
 # =====================================================
-# INPUTS
+# INPUTS (LIGHTWEIGHT STRUCTURED CONTEXT)
 # =====================================================
 campaign_type = st.selectbox(
     "Campaign Type *",
@@ -93,6 +110,18 @@ landing_page = None
 landing_pages_raw = None
 target_keywords = None
 
+st.subheader("Brand Inputs (Optional but improves accuracy)")
+
+brand_notes = st.text_area(
+    "Brand Notes (what you sell, tone, pricing level, competitors)",
+    height=100
+)
+
+price_hint = st.selectbox(
+    "Price Positioning (optional)",
+    ["Unknown", "Low", "Mid", "High", "Luxury"]
+)
+
 if campaign_type == "PMax":
     landing_pages_raw = st.text_area("Landing Pages (one per line) *")
 
@@ -106,18 +135,12 @@ elif campaign_type == "Search":
 
 
 # =====================================================
-# BRAND CONTEXT GENERATION
+# MAIN ACTION (SINGLE BUTTON)
 # =====================================================
-if st.button("Build Brand Context"):
+if st.button("Confirm and Run Search Term Audit"):
 
-    clear_error()
-
-    if not campaign_type:
-        set_error("E100", "Campaign type required")
-        st.stop()
-
-    if not uploaded_file:
-        set_error("E101", "Search terms CSV required")
+    if not campaign_type or not uploaded_file:
+        st.error("Campaign type and CSV are required")
         st.stop()
 
     terms = parse_csv(uploaded_file)
@@ -128,6 +151,9 @@ if st.button("Build Brand Context"):
         if landing_pages_raw else None
     )
 
+    # =====================================================
+    # SCRAPE
+    # =====================================================
     with st.spinner("Scraping landing pages..."):
         landing_context = get_landing_context(
             campaign_type=campaign_type,
@@ -135,69 +161,38 @@ if st.button("Build Brand Context"):
             landing_pages=landing_pages
         )
 
+    # =====================================================
+    # BRAND CONTEXT BUILD (NOW IMPROVED INPUTS INCLUDED)
+    # =====================================================
     with st.spinner("Building brand context..."):
+
+        enriched_prompt_context = f"""
+Brand Notes:
+{brand_notes}
+
+Price Positioning Hint:
+{price_hint}
+"""
+
         brand_model_data = build_context(
-            page_text=landing_context,
+            page_text=landing_context + "\n\n" + enriched_prompt_context,
             target_keywords=target_keywords,
             campaign_type=campaign_type
         )
 
     st.session_state.brand_data = brand_model_data
-    st.session_state.brand_edited = brand_model_data.copy()
-    st.session_state.brand_confirmed = False
+    st.session_state.brand_confirmed = True
 
+    # =====================================================
+    # DISPLAY CLEAN BRAND CONTEXT
+    # =====================================================
+    st.subheader("Brand Context (Auto-Generated)")
 
-# =====================================================
-# BRAND CONTEXT DISPLAY (EDITABLE)
-# =====================================================
-if st.session_state.brand_data:
+    st.text(format_brand_context(brand_model_data))
 
-    st.subheader("Brand Context")
-
-    edited = st.text_area(
-        "Edit if needed (JSON format)",
-        value=str(st.session_state.brand_edited),
-        height=300
-    )
-
-    # try safe update
-    try:
-        import json
-        st.session_state.brand_edited = json.loads(edited.replace("'", '"'))
-    except:
-        pass
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-        if st.button("✏️ Edit summary"):
-            st.session_state.brand_confirmed = False
-            st.info("You can now modify the brand context above.")
-
-    with col2:
-        if st.button("✅ Confirm and continue audit"):
-            st.session_state.brand_confirmed = True
-            st.success("Brand context confirmed.")
-
-
-# =====================================================
-# RUN AUDIT
-# =====================================================
-if st.button("Run Search Term Audit"):
-
-    clear_error()
-
-    if not st.session_state.brand_confirmed:
-        set_error("E105", "Please confirm brand context first")
-        st.stop()
-
-    if not st.session_state.search_terms_cache:
-        set_error("E106", "Missing search terms")
-        st.stop()
-
-    terms = st.session_state.search_terms_cache
-    brand_model_data = st.session_state.brand_edited
-
+    # =====================================================
+    # CLASSIFICATION
+    # =====================================================
     negatives, reviews, positives = [], [], []
 
     with st.spinner("Classifying search terms..."):
@@ -222,6 +217,9 @@ if st.button("Run Search Term Audit"):
         "positive": positives
     }
 
+    # =====================================================
+    # POSTPROCESS
+    # =====================================================
     roots = extract_roots_protected(
         negative_terms=layer5_data["negative"],
         review_terms=layer5_data["review"],
@@ -241,6 +239,9 @@ if st.button("Run Search Term Audit"):
         layer7_data=final_data
     )
 
+    # =====================================================
+    # OUTPUT UI
+    # =====================================================
     st.success("Analysis Complete")
 
     st.subheader("Review Queue")
