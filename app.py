@@ -110,18 +110,6 @@ landing_page = None
 landing_pages_raw = None
 target_keywords = None
 
-st.subheader("Brand Inputs (Optional but improves accuracy)")
-
-brand_notes = st.text_area(
-    "Brand Notes (what you sell, tone, pricing level, competitors)",
-    height=100
-)
-
-price_hint = st.selectbox(
-    "Price Positioning (optional)",
-    ["Unknown", "Low", "Mid", "High", "Luxury"]
-)
-
 if campaign_type == "PMax":
     landing_pages_raw = st.text_area("Landing Pages (one per line) *")
 
@@ -133,6 +121,18 @@ elif campaign_type == "Search":
     landing_pages_raw = st.text_area("Landing Page URL *")
     target_keywords = st.text_area("Target Keywords *")
 
+
+st.subheader("Brand Inputs (Optional but improves accuracy)")
+
+brand_notes = st.text_area(
+    "Brand Notes (what you sell, tone, pricing level, competitors)",
+    height=100
+)
+
+price_hint = st.selectbox(
+    "Price Positioning (optional)",
+    ["Unknown", "Low", "Mid", "High", "Luxury"]
+)
 
 # =====================================================
 # MAIN ACTION (SINGLE BUTTON)
