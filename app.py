@@ -5,21 +5,18 @@ import streamlit as st
 import pandas as pd
 import google.generativeai as genai
 
-
 # =====================================================
-# PIPELINE MODULES (CORRECT ORDER)
+# PIPELINE MODULES (CLEAN ARCHITECTURE)
 # =====================================================
 from scraper import get_landing_context
 from context import build_context
 from classify import classify_terms_batch
 from postprocess import postprocess_results
 
-
 # =====================================================
 # MODEL
 # =====================================================
 model = genai.GenerativeModel("gemini-2.5-flash")
-
 
 # =====================================================
 # APP CONFIG
@@ -30,7 +27,6 @@ st.set_page_config(
 )
 
 st.title("Negative Keyworder - Final Version")
-
 
 # =====================================================
 # SESSION STATE
@@ -59,29 +55,6 @@ def clear_error():
 if st.session_state.error:
     st.error(st.session_state.error)
 
-
-# =====================================================
-# VALIDATION (NEW - REQUIRED)
-# =====================================================
-def validate_inputs():
-    if not campaign_type:
-        return "E100: Campaign type is required"
-
-    if not uploaded_file:
-        return "E101: Search terms CSV is required"
-
-    if campaign_type == "PMax" and not landing_pages_raw:
-        return "E102: Landing pages are required for PMax"
-
-    if campaign_type in ["Display", "Shopping"] and not landing_page:
-        return "E103: Landing page is required"
-
-    if campaign_type == "Search" and (not landing_pages_raw or not target_keywords):
-        return "E104: Search requires landing page + keywords"
-
-    return None
-
-
 # =====================================================
 # HELPERS
 # =====================================================
@@ -109,14 +82,12 @@ Return JSON only:
 }
 
 Rules:
-- Default to NEGATIVE
-- REVIEW only when unavoidable
-- POSITIVE only when explicit buying intent exists
+- REVIEW only when unavoidable ambiguity exists
+- POSITIVE only when clear buying intent exists
 """
 
-
 # =====================================================
-# UI INPUTS
+# INPUTS
 # =====================================================
 campaign_type = st.selectbox(
     "Campaign Type *",
@@ -132,7 +103,6 @@ landing_page = None
 landing_pages_raw = None
 target_keywords = None
 
-
 if campaign_type == "PMax":
     landing_pages_raw = st.text_area("Landing Pages (one per line) *")
 
@@ -140,10 +110,9 @@ elif campaign_type in ["Display", "Shopping"]:
     landing_page = st.text_input("Landing Page URL *")
     target_keywords = st.text_area("Target Keywords")
 
-if campaign_type == "Search":
+elif campaign_type == "Search":
     landing_pages_raw = st.text_area("Landing Page URL *")
     target_keywords = st.text_area("Target Keywords *")
-
 
 # =====================================================
 # STAGE 1 — BUILD CONTEXT
@@ -152,10 +121,24 @@ if st.button("Build Brand Context"):
 
     clear_error()
 
-    error = validate_inputs()
-    if error:
-        code, msg = error.split(": ", 1)
-        set_error(code, msg)
+    if not campaign_type:
+        set_error("E100", "Campaign type required")
+        st.stop()
+
+    if not uploaded_file:
+        set_error("E101", "Search terms CSV required")
+        st.stop()
+
+    if campaign_type == "PMax" and not landing_pages_raw:
+        set_error("E102", "Landing pages required for PMax")
+        st.stop()
+
+    if campaign_type in ["Display", "Shopping"] and not landing_page:
+        set_error("E103", "Landing page required")
+        st.stop()
+
+    if campaign_type == "Search" and (not landing_pages_raw or not target_keywords):
+        set_error("E104", "Search requires landing page + keywords")
         st.stop()
 
     terms = parse_csv(uploaded_file)
@@ -183,18 +166,17 @@ if st.button("Build Brand Context"):
 
     st.session_state.brand_data = brand_model_data
 
-    with st.expander("Brand Context (technical view)"):
+    with st.expander("Brand Context"):
         st.write(brand_model_data)
 
 
 # =====================================================
-# CONFIRM BUTTON (SAFE OUTSIDE FLOW)
+# CONFIRM BRAND
 # =====================================================
 if st.session_state.brand_data and not st.session_state.brand_confirmed:
     if st.button("Confirm Brand Context"):
         st.session_state.brand_confirmed = True
         st.success("Brand confirmed. You can now run audit.")
-
 
 # =====================================================
 # STAGE 2 — RUN AUDIT
@@ -203,36 +185,26 @@ if st.button("Run Search Term Audit"):
 
     clear_error()
 
-    error = validate_inputs()
-    if error:
-        code, msg = error.split(": ", 1)
-        set_error(code, msg)
-        st.stop()
-
     if not st.session_state.brand_confirmed:
         set_error("E105", "Please confirm brand context first")
         st.stop()
 
     if not st.session_state.search_terms_cache or not st.session_state.brand_data:
-        set_error("E106", "Missing pipeline state - rebuild brand context")
+        set_error("E106", "Missing brand context or search terms")
         st.stop()
 
     terms = st.session_state.search_terms_cache
     brand_model_data = st.session_state.brand_data
 
     # =====================================================
-    # PIPELINE
+    # PIPELINE EXECUTION
     # =====================================================
     with st.spinner("Running full audit pipeline..."):
 
-        auto_neg = []
-        remaining = terms
-
         negatives, reviews, positives = [], [], []
 
-        # CLASSIFICATION
-        with st.spinner("Classifying search terms with AI..."):
-            for batch in chunk_list(remaining, 100):
+        with st.spinner("Classifying search terms..."):
+            for batch in chunk_list(terms, 100):
 
                 result = classify_terms_batch(
                     model=model,
@@ -247,23 +219,20 @@ if st.button("Run Search Term Audit"):
                 reviews += result.get("review", [])
                 positives += result.get("positive", [])
 
-        negatives += auto_neg
-
         layer5_data = {
             "negative": negatives,
             "review": reviews,
             "positive": positives
         }
 
-        # POSTPROCESS
-        with st.spinner("Generating final outputs..."):
+        with st.spinner("Postprocessing results..."):
             outputs = postprocess_results(
                 layer5_data,
                 brand_model_data
             )
 
     # =====================================================
-    # OUTPUT UI (SAFE)
+    # OUTPUT UI
     # =====================================================
     st.success("Analysis Complete")
 
