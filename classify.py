@@ -1,17 +1,17 @@
 import json
 import re
-import google.generativeai as genai
 
 """
-This is the ONLY decision layer.
+This module is the ONLY classification engine.
 
-It is responsible for:
-- negative classification
-- review classification
-- positive classification
+It returns:
+- negative
+- review
+- positive
 
-No other module may override decisions.
+No downstream module may override outputs.
 """
+
 
 # =====================================================
 # SAFE GENERATION WRAPPER
@@ -26,7 +26,6 @@ def safe_generate(model, prompt, set_error=None):
 
         err = str(e)
 
-        # quota handling
         if "429" in err or "quota" in err.lower():
             if set_error:
                 set_error("E429", "Gemini quota exceeded")
@@ -39,9 +38,10 @@ def safe_generate(model, prompt, set_error=None):
 
 
 # =====================================================
-# JSON PARSER (STRICT)
+# JSON PARSER
 # =====================================================
 def extract_json(text: str):
+
     if not text:
         return None
 
@@ -59,7 +59,7 @@ def extract_json(text: str):
 
 
 # =====================================================
-# LAYER 5: CLASSIFICATION ENGINE
+# CLASSIFICATION ENGINE
 # =====================================================
 def classify_terms_batch(
     model,
@@ -70,111 +70,55 @@ def classify_terms_batch(
     rules
 ):
 
-    # safety: empty batch
     if not batch_terms:
         return {"negative": [], "review": [], "positive": []}
 
-    formatted_terms = "\n".join([f"- {t}" for t in batch_terms])
+    formatted_terms = "\n".join(f"- {t}" for t in batch_terms)
 
+    # IMPORTANT: USE EXTERNAL RULES (NOT HARDCODED)
     prompt = f"""
-You are an aggressive Google Ads negative keyword strategist.
+You are a PPC search term classifier.
 
-Your task:
-Remove wasted traffic aggressively.
-
-Your PRIMARY goal is:
-MAXIMISE irrelevant traffic exclusion.
-
-You are NOT cautious.
-You are NOT conservative.
-You do NOT protect edge-case traffic.
-
-------------------------------------------------
-CLASSIFICATION TYPES
-------------------------------------------------
-
-NEGATIVE:
-- irrelevant
-- low intent
-- informational
-- job seekers
-- free users
-- DIY intent
-- research intent
-- competitors
-- weak relevance
-- vague intent
-- poor commercial fit
-
-POSITIVE:
-- clearly aligned commercial intent
-- directly relevant to target offering
-
-REVIEW:
-- use ONLY in rare cases
-- use ONLY if traffic could realistically convert
-- REVIEW should normally be under 10% of terms
-
-------------------------------------------------
-DECISION POLICY
-------------------------------------------------
-
-DEFAULT TO NEGATIVE.
-
-If uncertain:
-NEGATIVE.
-
-If partially relevant:
-NEGATIVE.
-
-If weak intent:
-NEGATIVE.
-
-Only classify as REVIEW if excluding the term could realistically damage campaign performance.
-
-------------------------------------------------
-STRICT RULES
-------------------------------------------------
-
-1. Every term MUST be classified
-2. Never skip terms
-3. Never invent terms
-4. Output valid JSON only
-5. Do NOT explain reasoning
-
-------------------------------------------------
-BRAND CONTEXT
-------------------------------------------------
-
-{json.dumps(brand)}
-
-------------------------------------------------
-CAMPAIGN TYPE
-------------------------------------------------
-
-{campaign_type}
-
-------------------------------------------------
-TARGET KEYWORDS
-------------------------------------------------
-
-{target_keywords}
-
-------------------------------------------------
-SEARCH TERMS
-------------------------------------------------
-
-{formatted_terms}
-
-------------------------------------------------
-OUTPUT FORMAT
-------------------------------------------------
+Return ONLY valid JSON:
 
 {{
   "negative": [],
   "review": [],
   "positive": []
 }}
+
+========================
+CLASSIFICATION RULES
+========================
+
+{rules}
+
+========================
+BRAND CONTEXT
+========================
+{json.dumps(brand, indent=2)}
+
+========================
+CAMPAIGN TYPE
+========================
+{campaign_type}
+
+========================
+TARGET KEYWORDS
+========================
+{target_keywords}
+
+========================
+SEARCH TERMS
+========================
+{formatted_terms}
+
+========================
+HARD OUTPUT REQUIREMENT
+========================
+- Every term must appear in exactly ONE category
+- No explanations
+- JSON only
 """
 
     raw = safe_generate(model, prompt)
@@ -182,7 +126,7 @@ OUTPUT FORMAT
     data = extract_json(raw)
 
     # =====================================================
-    # FAILSAFE STRUCTURE
+    # FAILSAFE
     # =====================================================
     if not data:
         return {
@@ -190,26 +134,32 @@ OUTPUT FORMAT
             "review": [],
             "positive": []
         }
-    
 
     # =====================================================
     # NORMALISATION SAFETY
     # =====================================================
-    for key in ["negative", "review", "positive"]:
-        if key not in data or data[key] is None:
-            data[key] = []
+    data.setdefault("negative", [])
+    data.setdefault("review", [])
+    data.setdefault("positive", [])
 
     # =====================================================
-    # LOSSLESS GUARANTEE (IMPORTANT)
-    # ensure no term is dropped
+    # LOSSLESS GUARANTEE
     # =====================================================
-    all_classified = set(
-        data["negative"] + data["review"] + data["positive"]
+    classified = set(
+        data["negative"]
+        + data["review"]
+        + data["positive"]
     )
 
-    missing = [t for t in batch_terms if t not in all_classified]
+    missing = [t for t in batch_terms if t not in classified]
 
     if missing:
         data["negative"].extend(missing)
+
+    # =====================================================
+    # FINAL CLEANUP (DEDUPE SAFETY)
+    # =====================================================
+    for k in ["negative", "review", "positive"]:
+        data[k] = list(dict.fromkeys(data[k]))
 
     return data
