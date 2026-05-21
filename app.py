@@ -6,7 +6,7 @@ import pandas as pd
 import google.generativeai as genai
 
 # =====================================================
-# PIPELINE MODULES (CLEAN ARCHITECTURE)
+# PIPELINE MODULES
 # =====================================================
 from scraper import get_landing_context
 from context import build_context
@@ -26,20 +26,17 @@ model = genai.GenerativeModel("gemini-2.5-flash")
 # APP CONFIG
 # =====================================================
 st.set_page_config(
-    page_title="Negative Keyworder - Final Version",
+    page_title="Negative Keyworder",
     layout="wide"
 )
 
-st.title("Negative Keyworder - Final Version")
+st.title("Negative Keyworder")
 
 # =====================================================
 # SESSION STATE
 # =====================================================
 if "error" not in st.session_state:
     st.session_state.error = None
-
-if "brand_confirmed" not in st.session_state:
-    st.session_state.brand_confirmed = False
 
 if "brand_data" not in st.session_state:
     st.session_state.brand_data = None
@@ -59,6 +56,7 @@ def clear_error():
 if st.session_state.error:
     st.error(st.session_state.error)
 
+
 # =====================================================
 # HELPERS
 # =====================================================
@@ -76,19 +74,14 @@ def chunk_list(data, size=100):
 # CLASSIFICATION RULES
 # =====================================================
 CLASSIFICATION_RULES = """
-You are a strict PPC search term classifier.
-
 Return JSON only:
 {
   "negative": [],
   "review": [],
   "positive": []
 }
-
-Rules:
-- REVIEW only when unavoidable ambiguity exists
-- POSITIVE only when clear buying intent exists
 """
+
 
 # =====================================================
 # INPUTS
@@ -118,13 +111,54 @@ elif campaign_type == "Search":
     landing_pages_raw = st.text_area("Landing Page URL *")
     target_keywords = st.text_area("Target Keywords *")
 
+
 # =====================================================
-# STAGE 1 — BUILD CONTEXT
+# BRAND CONTEXT FORMATTER (NEW)
 # =====================================================
-if st.button("Build Brand Context"):
+def format_brand_context(ctx: dict) -> str:
+    if not ctx:
+        return "⚠️ No brand context generated."
+
+    def list_block(title, items):
+        if not items:
+            return f"### {title}\n- None"
+        return f"### {title}\n" + "\n".join(f"- {x}" for x in items)
+
+    return f"""
+## Brand Summary
+
+### Positioning
+{ctx.get("positioning", ["Unknown"])}
+
+### Core Offerings
+{list_block("Core Offerings", ctx.get("core_offerings", []))}
+
+### Price Positioning
+{ctx.get("price_positioning", ["Unknown"])}
+
+### Intent Profile
+- Commercial: {ctx.get("intent_profile", {}).get("commercial", "unknown")}
+- Informational: {ctx.get("intent_profile", {}).get("informational", "unknown")}
+- Lead Gen: {ctx.get("intent_profile", {}).get("lead_generation", "unknown")}
+
+### Safe Roots
+{list_block("Safe Roots", ctx.get("safe_roots", []))}
+
+### Risk Terms
+{list_block("Risk Terms", ctx.get("risk_terms", []))}
+"""
+
+
+# =====================================================
+# MAIN ACTION (SINGLE BUTTON FLOW)
+# =====================================================
+if st.button("Build & Run Audit"):
 
     clear_error()
 
+    # -------------------------
+    # VALIDATION
+    # -------------------------
     if not campaign_type:
         set_error("E100", "Campaign type required")
         st.stop()
@@ -133,25 +167,15 @@ if st.button("Build Brand Context"):
         set_error("E101", "Search terms CSV required")
         st.stop()
 
-    if campaign_type == "PMax" and not landing_pages_raw:
-        set_error("E102", "Landing pages required for PMax")
-        st.stop()
-
-    if campaign_type in ["Display", "Shopping"] and not landing_page:
-        set_error("E103", "Landing page required")
-        st.stop()
-
-    if campaign_type == "Search" and (not landing_pages_raw or not target_keywords):
-        set_error("E104", "Search requires landing page + keywords")
-        st.stop()
-
     terms = parse_csv(uploaded_file)
     st.session_state.search_terms_cache = terms
 
+    # -------------------------
+    # LANDING CONTEXT
+    # -------------------------
     landing_pages = (
         [x.strip() for x in landing_pages_raw.split("\n") if x.strip()]
-        if campaign_type == "PMax"
-        else None
+        if landing_pages_raw else None
     )
 
     with st.spinner("Scraping landing pages..."):
@@ -161,6 +185,9 @@ if st.button("Build Brand Context"):
             landing_pages=landing_pages
         )
 
+    # -------------------------
+    # BRAND CONTEXT (AUTO)
+    # -------------------------
     with st.spinner("Building brand context..."):
         brand_model_data = build_context(
             page_text=landing_context,
@@ -170,94 +197,64 @@ if st.button("Build Brand Context"):
 
     st.session_state.brand_data = brand_model_data
 
-    with st.expander("Brand Context"):
-        st.write(brand_model_data)
+    st.markdown(format_brand_context(brand_model_data))
 
-# =====================================================
-# CONFIRM BRAND
-# =====================================================
-if st.session_state.brand_data and not st.session_state.brand_confirmed:
-    if st.button("Confirm Brand Context"):
-        st.session_state.brand_confirmed = True
-        st.success("Brand confirmed. You can now run audit.")
+    # -------------------------
+    # CLASSIFICATION
+    # -------------------------
+    negatives, reviews, positives = [], [], []
 
-# =====================================================
-# STAGE 2 — RUN AUDIT
-# =====================================================
-if st.button("Run Search Term Audit"):
+    with st.spinner("Classifying search terms..."):
+        for batch in chunk_list(terms, 100):
 
-    clear_error()
+            result = classify_terms_batch(
+                model=model,
+                batch_terms=batch,
+                brand=brand_model_data,
+                campaign_type=campaign_type,
+                target_keywords=target_keywords,
+                rules=CLASSIFICATION_RULES
+            )
 
-    if not st.session_state.brand_confirmed:
-        set_error("E105", "Please confirm brand context first")
-        st.stop()
+            negatives += result.get("negative", [])
+            reviews += result.get("review", [])
+            positives += result.get("positive", [])
 
-    if not st.session_state.search_terms_cache or not st.session_state.brand_data:
-        set_error("E106", "Missing brand context or search terms")
-        st.stop()
+    layer5_data = {
+        "negative": negatives,
+        "review": reviews,
+        "positive": positives
+    }
 
-    terms = st.session_state.search_terms_cache
-    brand_model_data = st.session_state.brand_data
+    # -------------------------
+    # ROOTS + EXPANSION
+    # -------------------------
+    roots = extract_roots_protected(
+        negative_terms=layer5_data["negative"],
+        review_terms=layer5_data["review"],
+        positive_terms=layer5_data["positive"],
+        brand_model=brand_model_data
+    )
 
-    # =====================================================
-    # PIPELINE EXECUTION
-    # =====================================================
-    with st.spinner("Running full audit pipeline..."):
+    final_data = final_classification(
+        roots=roots,
+        brand_model=brand_model_data
+    )
 
-        negatives, reviews, positives = [], [], []
+    outputs = build_outputs(
+        brand_model=brand_model_data,
+        layer5_data=layer5_data,
+        layer6_roots=roots,
+        layer7_data=final_data
+    )
 
-        with st.spinner("Classifying search terms..."):
-            for batch in chunk_list(terms, 100):
-
-                result = classify_terms_batch(
-                    model=model,
-                    batch_terms=batch,
-                    brand=brand_model_data,
-                    campaign_type=campaign_type,
-                    target_keywords=target_keywords,
-                    rules=CLASSIFICATION_RULES
-                )
-
-                negatives += result.get("negative", [])
-                reviews += result.get("review", [])
-                positives += result.get("positive", [])
-
-        layer5_data = {
-            "negative": negatives,
-            "review": reviews,
-            "positive": positives
-        }
-
-        # =================================================
-        # POSTPROCESS PIPELINE (FIXED)
-        # =================================================
-
-        roots = extract_roots_protected(
-            negative_terms=layer5_data["negative"],
-            review_terms=layer5_data["review"],
-            positive_terms=layer5_data["positive"],
-            brand_model=brand_model_data
-        )
-
-        final_data = final_classification(
-            roots=roots,
-            brand_model=brand_model_data
-        )
-
-        outputs = build_outputs(
-            brand_model=brand_model_data,
-            layer5_data=layer5_data,
-            layer6_roots=roots,
-            layer7_data=final_data
-        )
-
-    # =====================================================
-    # OUTPUT UI
-    # =====================================================
+    # -------------------------
+    # OUTPUT
+    # -------------------------
     st.success("Analysis Complete")
 
     with st.expander("Brand Summary"):
-        st.write(outputs.get("brand_summary", {}))
+        st.markdown(format_brand_context(brand_model_data))
 
     col1, col2, col3 = st.columns(3)
 
@@ -284,7 +281,7 @@ if st.button("Run Search Term Audit"):
     st.subheader("Final Google Ads Negative List")
 
     st.text_area(
-        "Copy and paste directly into Google Ads",
+        "Copy into Google Ads",
         value=outputs.get("final_google_ads", ""),
         height=350
     )
