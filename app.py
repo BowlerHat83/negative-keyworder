@@ -1,14 +1,18 @@
+# =====================================================
+# CORE LIBRARIES
+# =====================================================
 import streamlit as st
 import pandas as pd
 import google.generativeai as genai
 
+
+# =====================================================
+# PIPELINE MODULES (CORRECT ORDER)
+# =====================================================
 from scraper import get_landing_context
-from intelli import build_brand_model
-from prefilter import contextual_prefilter
+from context import build_context
 from classify import classify_terms_batch
-from root import extract_roots_protected
-from outputformat import final_classification
-from output import build_outputs
+from postprocess import postprocess_results
 
 
 # =====================================================
@@ -61,29 +65,12 @@ if st.session_state.error:
 # =====================================================
 def parse_csv(file):
     df = pd.read_csv(file)
-    return (
-        df.iloc[:, 0]
-        .dropna()
-        .astype(str)
-        .tolist()
-    )
+    return df.iloc[:, 0].dropna().astype(str).tolist()
 
 
 def chunk_list(data, size=100):
     for i in range(0, len(data), size):
         yield data[i:i + size]
-
-
-def safe_flatten(lst):
-    clean = []
-    for item in lst:
-        if isinstance(item, list):
-            clean.extend(item)
-        elif item is None:
-            continue
-        else:
-            clean.append(item)
-    return clean
 
 
 # =====================================================
@@ -126,18 +113,17 @@ if campaign_type == "PMax":
 
 elif campaign_type in ["Display", "Shopping"]:
     landing_page = st.text_input("Landing Page URL")
-    target_keywords = st.text_area("Target Keywords (optional for non-Search)")
+    target_keywords = st.text_area("Target Keywords (optional)")
 
 if campaign_type == "Search":
     landing_pages_raw = st.text_area("Landing Page URL")
     target_keywords = st.text_area("Target Keywords")
 
-# =====================================================
-# STAGE 1 — BUILD BRAND CONTEXT
-# =====================================================
-build_brand = st.button("Build Brand Context")
 
-if build_brand:
+# =====================================================
+# STAGE 1 — BUILD CONTEXT
+# =====================================================
+if st.button("Build Brand Context"):
 
     clear_error()
 
@@ -166,7 +152,7 @@ if build_brand:
         )
 
     with st.spinner("Building brand context..."):
-        brand_model_data = build_brand_model(
+        brand_model_data = build_context(
             page_text=landing_context,
             target_keywords=target_keywords,
             campaign_type=campaign_type
@@ -174,8 +160,8 @@ if build_brand:
 
     st.session_state.brand_data = brand_model_data
 
-    st.subheader("Brand Context Review")
-    st.json(brand_model_data)
+    with st.expander("Brand Context (technical view)"):
+        st.write(brand_model_data)
 
     if st.button("Confirm Brand Context"):
         st.session_state.brand_confirmed = True
@@ -183,101 +169,108 @@ if build_brand:
 
 
 # =====================================================
-# STAGE 2 — RUN AUDIT (ONLY AFTER CONFIRMATION)
+# STAGE 2 — RUN AUDIT
 # =====================================================
-run_analysis = st.button(
+if st.button(
     "Run Search Term Audit",
     disabled=not st.session_state.brand_confirmed
-)
-
-if run_analysis and st.session_state.brand_confirmed:
+):
 
     clear_error()
 
     terms = st.session_state.search_terms_cache
     brand_model_data = st.session_state.brand_data
 
-    # -------------------------
-    # PREFILTER
-    # -------------------------
-    auto_neg, remaining = contextual_prefilter(
-        terms,
-        brand_model_data
-    )
+    # =====================================================
+    # PIPELINE START (SPINNER FIXED)
+    # =====================================================
+    with st.spinner("Running full audit pipeline..."):
 
-    # -------------------------
-    # CLASSIFICATION
-    # -------------------------
-    negatives, reviews, positives = [], [], []
+        # -------------------------
+        # PREFILTER (inside context.py OR handled implicitly)
+        # -------------------------
+        auto_neg = []
+        remaining = terms  # simplified since prefilter removed from architecture
 
-    for batch in chunk_list(remaining, 100):
+        # -------------------------
+        # CLASSIFICATION
+        # -------------------------
+        negatives, reviews, positives = [], [], []
 
-        result = classify_terms_batch(
-            model=model,
-            batch_terms=batch,
-            brand=brand_model_data,
-            campaign_type=campaign_type,
-            target_keywords=target_keywords,
-            rules=CLASSIFICATION_RULES
-        )
+        with st.spinner("Classifying search terms with AI..."):
+            for batch in chunk_list(remaining, 100):
 
-        negatives += result.get("negative", [])
-        reviews += result.get("review", [])
-        positives += result.get("positive", [])
+                result = classify_terms_batch(
+                    model=model,
+                    batch_terms=batch,
+                    brand=brand_model_data,
+                    campaign_type=campaign_type,
+                    target_keywords=target_keywords,
+                    rules=CLASSIFICATION_RULES
+                )
 
-    negatives += auto_neg
+                negatives += result.get("negative", [])
+                reviews += result.get("review", [])
+                positives += result.get("positive", [])
 
-    layer5_data = {
-        "negative": negatives,
-        "review": reviews,
-        "positive": positives
-    }
+        negatives += auto_neg
 
-    # -------------------------
-    # ROOTS
-    # -------------------------
-    roots = extract_roots_protected(
-        negative_terms=layer5_data["negative"],
-        review_terms=layer5_data["review"],
-        positive_terms=layer5_data["positive"],
-        brand_model=brand_model_data
-    )
+        layer5_data = {
+            "negative": negatives,
+            "review": reviews,
+            "positive": positives
+        }
 
-    # -------------------------
-    # FINAL FORMAT
-    # -------------------------
-    final_data = final_classification(
-        roots,
-        brand_model_data
-    )
+        # -------------------------
+        # POSTPROCESS (ROOTS + EXPANSION + FINAL OUTPUT)
+        # -------------------------
+        with st.spinner("Generating final outputs..."):
+            final_data = postprocess_results(
+                layer5_data,
+                brand_model_data
+            )
 
-    # -------------------------
-    # OUTPUTS
-    # -------------------------
-    outputs = build_outputs(
-        brand_model=brand_model_data,
-        layer5_data=layer5_data,
-        layer6_roots=roots,
-        layer7_data=final_data
-    )
+        # -------------------------
+        # BUILD OUTPUTS
+        # -------------------------
+        with st.spinner("Formatting results..."):
+            outputs = final_data
+
 
     # =====================================================
-    # OUTPUT UI
+    # OUTPUT UI (ONLY AFTER COMPLETION)
     # =====================================================
     st.success("Analysis Complete")
 
-    brand_clean = safe_flatten([outputs["brand_summary"]])
-    st.subheader("Brand Summary")
-    st.text("\n".join(map(str, brand_clean)))
+    with st.expander("Brand Summary"):
+        st.write(outputs.get("brand_summary", {}))
 
-    st.subheader("Review Queue")
-    st.dataframe(pd.DataFrame({"Review Terms": reviews}))
+    col1, col2, col3 = st.columns(3)
 
-    st.subheader("Root Negatives")
-    st.dataframe(pd.DataFrame({"Root Negatives": roots}))
+    with col1:
+        st.subheader("Review Queue")
+        st.dataframe(pd.DataFrame({
+            "Search Terms": outputs.get("review_queue", [])
+        }))
 
-    st.subheader("AI Variations")
-    st.dataframe(pd.DataFrame({"AI Variations": outputs["ai_variations"]}))
+    with col2:
+        st.subheader("Root Signals")
+        st.dataframe(pd.DataFrame({
+            "Roots": outputs.get("roots", [])
+        }))
+
+    with col3:
+        st.subheader("AI Variations")
+        st.dataframe(pd.DataFrame({
+            "Variations": outputs.get("ai_negative_variations", [])
+        }))
+
+    st.divider()
 
     st.subheader("Final Google Ads Negative List")
-    st.text_area("Copy Paste", outputs["final_google_ads"], height=300)
+
+    st.text_area(
+        "Copy and paste directly into Google Ads",
+        value=outputs.get("final_google_ads", ""),
+        height=350
+    )
