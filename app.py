@@ -61,6 +61,28 @@ if st.session_state.error:
 
 
 # =====================================================
+# VALIDATION (NEW - REQUIRED)
+# =====================================================
+def validate_inputs():
+    if not campaign_type:
+        return "E100: Campaign type is required"
+
+    if not uploaded_file:
+        return "E101: Search terms CSV is required"
+
+    if campaign_type == "PMax" and not landing_pages_raw:
+        return "E102: Landing pages are required for PMax"
+
+    if campaign_type in ["Display", "Shopping"] and not landing_page:
+        return "E103: Landing page is required"
+
+    if campaign_type == "Search" and (not landing_pages_raw or not target_keywords):
+        return "E104: Search requires landing page + keywords"
+
+    return None
+
+
+# =====================================================
 # HELPERS
 # =====================================================
 def parse_csv(file):
@@ -97,11 +119,14 @@ Rules:
 # UI INPUTS
 # =====================================================
 campaign_type = st.selectbox(
-    "Campaign Type",
+    "Campaign Type *",
     ["", "Search", "Shopping", "Display", "PMax"]
 )
 
-uploaded_file = st.file_uploader("Search Terms CSV", type=["csv"])
+uploaded_file = st.file_uploader(
+    "Search Terms CSV *",
+    type=["csv"]
+)
 
 landing_page = None
 landing_pages_raw = None
@@ -109,15 +134,15 @@ target_keywords = None
 
 
 if campaign_type == "PMax":
-    landing_pages_raw = st.text_area("Landing Pages (one per line)")
+    landing_pages_raw = st.text_area("Landing Pages (one per line) *")
 
 elif campaign_type in ["Display", "Shopping"]:
-    landing_page = st.text_input("Landing Page URL")
-    target_keywords = st.text_area("Target Keywords (optional)")
+    landing_page = st.text_input("Landing Page URL *")
+    target_keywords = st.text_area("Target Keywords")
 
 if campaign_type == "Search":
-    landing_pages_raw = st.text_area("Landing Page URL")
-    target_keywords = st.text_area("Target Keywords")
+    landing_pages_raw = st.text_area("Landing Page URL *")
+    target_keywords = st.text_area("Target Keywords *")
 
 
 # =====================================================
@@ -127,12 +152,10 @@ if st.button("Build Brand Context"):
 
     clear_error()
 
-    if not uploaded_file:
-        set_error("E001", "Missing CSV")
-        st.stop()
-
-    if not landing_page and not landing_pages_raw:
-        set_error("E002", "Missing landing page(s)")
+    error = validate_inputs()
+    if error:
+        code, msg = error.split(": ", 1)
+        set_error(code, msg)
         st.stop()
 
     terms = parse_csv(uploaded_file)
@@ -163,6 +186,11 @@ if st.button("Build Brand Context"):
     with st.expander("Brand Context (technical view)"):
         st.write(brand_model_data)
 
+
+# =====================================================
+# CONFIRM BUTTON (SAFE OUTSIDE FLOW)
+# =====================================================
+if st.session_state.brand_data and not st.session_state.brand_confirmed:
     if st.button("Confirm Brand Context"):
         st.session_state.brand_confirmed = True
         st.success("Brand confirmed. You can now run audit.")
@@ -171,32 +199,38 @@ if st.button("Build Brand Context"):
 # =====================================================
 # STAGE 2 — RUN AUDIT
 # =====================================================
-if st.button(
-    "Run Search Term Audit",
-    disabled=not st.session_state.brand_confirmed
-):
+if st.button("Run Search Term Audit"):
 
     clear_error()
+
+    error = validate_inputs()
+    if error:
+        code, msg = error.split(": ", 1)
+        set_error(code, msg)
+        st.stop()
+
+    if not st.session_state.brand_confirmed:
+        set_error("E105", "Please confirm brand context first")
+        st.stop()
+
+    if not st.session_state.search_terms_cache or not st.session_state.brand_data:
+        set_error("E106", "Missing pipeline state - rebuild brand context")
+        st.stop()
 
     terms = st.session_state.search_terms_cache
     brand_model_data = st.session_state.brand_data
 
     # =====================================================
-    # PIPELINE START (SPINNER FIXED)
+    # PIPELINE
     # =====================================================
     with st.spinner("Running full audit pipeline..."):
 
-        # -------------------------
-        # PREFILTER (inside context.py OR handled implicitly)
-        # -------------------------
         auto_neg = []
-        remaining = terms  # simplified since prefilter removed from architecture
+        remaining = terms
 
-        # -------------------------
-        # CLASSIFICATION
-        # -------------------------
         negatives, reviews, positives = [], [], []
 
+        # CLASSIFICATION
         with st.spinner("Classifying search terms with AI..."):
             for batch in chunk_list(remaining, 100):
 
@@ -221,24 +255,15 @@ if st.button(
             "positive": positives
         }
 
-        # -------------------------
-        # POSTPROCESS (ROOTS + EXPANSION + FINAL OUTPUT)
-        # -------------------------
+        # POSTPROCESS
         with st.spinner("Generating final outputs..."):
-            final_data = postprocess_results(
+            outputs = postprocess_results(
                 layer5_data,
                 brand_model_data
             )
 
-        # -------------------------
-        # BUILD OUTPUTS
-        # -------------------------
-        with st.spinner("Formatting results..."):
-            outputs = final_data
-
-
     # =====================================================
-    # OUTPUT UI (ONLY AFTER COMPLETION)
+    # OUTPUT UI (SAFE)
     # =====================================================
     st.success("Analysis Complete")
 
