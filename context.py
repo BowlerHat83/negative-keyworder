@@ -7,61 +7,77 @@ import google.generativeai as genai
 from typing import List, Tuple, Dict, Any
 
 # =====================================================
+# MODEL INIT (FIX #1 — CRITICAL)
+# =====================================================
+model = genai.GenerativeModel("gemini-2.5-flash")
+
+
+# =====================================================
 # SAFE GENERATION
 # =====================================================
 def safe_generate(prompt: str):
     try:
         response = model.generate_content(prompt)
+        if not response or not response.text:
+            return None
         return response.text.strip()
     except Exception:
         return None
 
 
 # =====================================================
-# JSON PARSER
+# JSON PARSER (ROBUST FIX)
 # =====================================================
 def extract_json(text: str):
     if not text:
         return None
 
+    # direct parse
     try:
         return json.loads(text)
     except Exception:
-        match = re.search(r"\{.*\}", text, re.DOTALL)
-        if match:
-            try:
-                return json.loads(match.group())
-            except Exception:
-                return None
+        pass
+
+    # extract fenced JSON
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group())
+        except Exception:
+            return None
 
     return None
 
 
 # =====================================================
-# BRAND MODEL BUILDER
+# BRAND MODEL BUILDER (IMPROVED PROMPT)
 # =====================================================
 def build_context(page_text: str, target_keywords: str, campaign_type: str) -> Dict[str, Any]:
 
     prompt = f"""
 You are a PPC Brand Intelligence Engine.
 
-Extract ONLY brand understanding.
+Your job is to extract structured brand intelligence from website content.
 
-Return ONLY valid JSON:
+IMPORTANT:
+- Return valid JSON only
+- Do not wrap in markdown
+- Do not include commentary
 
+OUTPUT FORMAT:
 {{
-  "positioning": [],
-  "price_positioning": [],
+  "positioning": ["..."],
+  "price_positioning": ["..."],
   "intent_profile": {{
     "commercial": "high | medium | low",
     "informational": "high | medium | low",
     "lead_generation": "high | medium | low"
   }},
-  "core_offerings": [],
-  "safe_roots": [],
-  "risk_terms": [],
-  "low_value_intents": [],
-  "negative_bias_rules": []
+  "core_offerings": ["..."],
+  "safe_roots": ["..."],
+  "risk_terms": ["..."],
+  "low_value_intents": ["..."],
+  "negative_bias_rules": ["..."]
 }}
 
 CAMPAIGN TYPE:
@@ -71,37 +87,46 @@ TARGET KEYWORDS:
 {target_keywords}
 
 PAGE CONTENT:
-{page_text[:7000]}
+{page_text[:6000]}
 """
 
     raw = safe_generate(prompt)
     data = extract_json(raw)
 
-    # fallback structure
+    # =====================================================
+    # FALLBACK FIX (CRITICAL — PREVENT EMPTY OUTPUTS)
+    # =====================================================
     if not data:
         return {
-            "positioning": ["unknown"],
+            "positioning": ["unknown positioning"],
             "price_positioning": ["unknown"],
             "intent_profile": {
                 "commercial": "medium",
                 "informational": "medium",
                 "lead_generation": "medium"
             },
-            "core_offerings": [],
+            "core_offerings": ["unable to extract — fallback active"],
             "safe_roots": [],
             "risk_terms": [],
             "low_value_intents": [],
             "negative_bias_rules": []
         }
 
-    # safety defaults
-    data.setdefault("positioning", [])
-    data.setdefault("price_positioning", [])
-    data.setdefault("core_offerings", [])
-    data.setdefault("safe_roots", [])
-    data.setdefault("risk_terms", [])
-    data.setdefault("low_value_intents", [])
-    data.setdefault("negative_bias_rules", [])
+    # =====================================================
+    # SAFE NORMALISATION
+    # =====================================================
+    defaults = {
+        "positioning": [],
+        "price_positioning": [],
+        "core_offerings": [],
+        "safe_roots": [],
+        "risk_terms": [],
+        "low_value_intents": [],
+        "negative_bias_rules": []
+    }
+
+    for k, v in defaults.items():
+        data.setdefault(k, v)
 
     data.setdefault("intent_profile", {
         "commercial": "medium",
@@ -120,7 +145,7 @@ def normalize(text: str) -> str:
 
 
 # =====================================================
-# PREFILTER ENGINE
+# PREFILTER ENGINE (UNCHANGED LOGIC, SAFE FIXES)
 # =====================================================
 def contextual_prefilter(
     terms: List[str],
@@ -164,27 +189,22 @@ def contextual_prefilter(
 
         t = normalize(term)
 
-        # 1. protect safe roots
         if is_safe(t):
             remaining.append(term)
             continue
 
-        # 2. risk → LLM review later
         if is_risk(t):
             remaining.append(term)
             continue
 
-        # 3. low value → auto negative
         if is_low_value(t):
             auto_negative.append(term)
             continue
 
-        # 4. bias rules
         if apply_bias(t):
             auto_negative.append(term)
             continue
 
-        # 5. default pass-through
         remaining.append(term)
 
     return auto_negative, remaining
