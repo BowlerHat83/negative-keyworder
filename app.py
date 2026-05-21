@@ -11,7 +11,11 @@ import google.generativeai as genai
 from scraper import get_landing_context
 from context import build_context
 from classify import classify_terms_batch
-from postprocess import postprocess_results
+from postprocess import (
+    extract_roots_protected,
+    final_classification,
+    build_outputs
+)
 
 # =====================================================
 # MODEL
@@ -169,7 +173,6 @@ if st.button("Build Brand Context"):
     with st.expander("Brand Context"):
         st.write(brand_model_data)
 
-
 # =====================================================
 # CONFIRM BRAND
 # =====================================================
@@ -225,11 +228,28 @@ if st.button("Run Search Term Audit"):
             "positive": positives
         }
 
-        with st.spinner("Postprocessing results..."):
-            outputs = postprocess_results(
-                layer5_data,
-                brand_model_data
-            )
+        # =================================================
+        # POSTPROCESS PIPELINE (FIXED)
+        # =================================================
+
+        roots = extract_roots_protected(
+            negative_terms=layer5_data["negative"],
+            review_terms=layer5_data["review"],
+            positive_terms=layer5_data["positive"],
+            brand_model=brand_model_data
+        )
+
+        final_data = final_classification(
+            roots=roots,
+            brand_model=brand_model_data
+        )
+
+        outputs = build_outputs(
+            brand_model=brand_model_data,
+            layer5_data=layer5_data,
+            layer6_roots=roots,
+            layer7_data=final_data
+        )
 
     # =====================================================
     # OUTPUT UI
@@ -250,13 +270,13 @@ if st.button("Run Search Term Audit"):
     with col2:
         st.subheader("Root Signals")
         st.dataframe(pd.DataFrame({
-            "Roots": outputs.get("roots", [])
+            "Roots": outputs.get("negatives_with_roots", [])
         }))
 
     with col3:
         st.subheader("AI Variations")
         st.dataframe(pd.DataFrame({
-            "Variations": outputs.get("ai_negative_variations", [])
+            "Variations": outputs.get("ai_variations", [])
         }))
 
     st.divider()
