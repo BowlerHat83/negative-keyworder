@@ -1,126 +1,190 @@
+import google.generativeai as genai
+import json
 import re
 from typing import List, Tuple, Dict
+
+# =====================================================
+# MODEL
+# =====================================================
+model = genai.GenerativeModel("gemini-2.5-flash")
+
+
+# =====================================================
+# SAFE GENERATION
+# =====================================================
+def safe_generate(prompt: str):
+    try:
+        response = model.generate_content(prompt)
+        return response.text.strip()
+    except Exception:
+        return None
+
+
+# =====================================================
+# JSON PARSER
+# =====================================================
+def extract_json(text: str):
+    if not text:
+        return None
+
+    try:
+        return json.loads(text)
+    except Exception:
+        match = re.search(r"\{.*\}", text, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group())
+            except:
+                return None
+
+    return None
+
+
+# =====================================================
+# LAYER 3 — BRAND MODEL
+# =====================================================
+def build_brand_model(page_text: str, target_keywords: str, campaign_type: str):
+
+    prompt = f"""
+You are a PPC Brand Intelligence Engine.
+
+Extract ONLY brand understanding. Do NOT classify keywords.
+
+Return ONLY valid JSON.
+
+{
+  "positioning": [],
+  "price_positioning": [],
+  "intent_profile": {
+    "commercial": "high | medium | low",
+    "informational": "high | medium | low",
+    "lead_generation": "high | medium | low"
+  },
+  "core_offerings": [],
+  "safe_roots": [],
+  "risk_terms": [],
+  "low_value_intents": [],
+  "negative_bias_rules": []
+}
+
+CAMPAIGN TYPE:
+{campaign_type}
+
+TARGET KEYWORDS:
+{target_keywords}
+
+PAGE CONTENT:
+{page_text[:7000]}
+"""
+
+    raw = safe_generate(prompt)
+    data = extract_json(raw)
+
+    if not data:
+        return {
+            "positioning": ["unknown"],
+            "price_positioning": ["unknown"],
+            "intent_profile": {
+                "commercial": "medium",
+                "informational": "medium",
+                "lead_generation": "medium"
+            },
+            "core_offerings": [],
+            "safe_roots": [],
+            "risk_terms": [],
+            "low_value_intents": [],
+            "negative_bias_rules": []
+        }
+
+    # safety defaults
+    data.setdefault("positioning", [])
+    data.setdefault("price_positioning", [])
+    data.setdefault("core_offerings", [])
+    data.setdefault("safe_roots", [])
+    data.setdefault("risk_terms", [])
+    data.setdefault("low_value_intents", [])
+    data.setdefault("negative_bias_rules", [])
+
+    data.setdefault("intent_profile", {
+        "commercial": "medium",
+        "informational": "medium",
+        "lead_generation": "medium"
+    })
+
+    return data
 
 
 # =====================================================
 # NORMALISATION
 # =====================================================
 def normalize(text: str) -> str:
-    return re.sub(r"\s+", " ", text.strip().lower())
+    return re.sub(r"\s+", " ", str(text).strip().lower())
 
 
 # =====================================================
-# SCORE-BASED PREFILTER (BRAND CONTEXT DRIVEN)
+# LAYER 4 — PREFILTER ENGINE
 # =====================================================
 def contextual_prefilter(terms: List[str], brand_model: Dict) -> Tuple[List[str], List[str]]:
-
-    """
-    Layer 4 Prefilter Engine
-
-    Input:
-        terms -> raw search terms
-        brand_model -> Layer 3 output
-
-    Output:
-        auto_negative -> safe removals
-        remaining -> must go to LLM
-    """
 
     auto_negative = []
     remaining = []
 
-    # =====================================================
-    # BRAND CONTEXT SIGNALS (FROM LAYER 3 ONLY)
-    # =====================================================
-    positioning = brand_model.get("positioning", "unknown")
-    price_positioning = brand_model.get("price_positioning", "unknown")
-    intent_profile = brand_model.get("intent_profile", "unknown")
-
     safe_roots = set(normalize(x) for x in brand_model.get("safe_roots", []))
-    low_value_intents = set(normalize(x) for x in brand_model.get("low_value_intents", []))
+    low_value = set(normalize(x) for x in brand_model.get("low_value_intents", []))
     risk_terms = set(normalize(x) for x in brand_model.get("risk_terms", []))
     bias_rules = brand_model.get("negative_bias_rules", [])
+    positioning = brand_model.get("positioning", [])
+    intent_profile = brand_model.get("intent_profile", {})
 
-    # =====================================================
-    # RULE ENGINE (CONTEXTUAL, NOT HARDCODED FILTERING)
-    # =====================================================
+    def is_low_value(t):
+        return any(sig in t for sig in low_value)
 
-    def violates_low_value(term: str) -> bool:
-        """Check against learned low-value intents"""
-        return any(sig in term for sig in low_value_intents)
+    def is_safe(t):
+        return any(root in t for root in safe_roots)
 
-    def safe_root_match(term: str) -> bool:
-        """Protect brand-critical language"""
-        return any(root in term for root in safe_roots)
+    def is_risk(t):
+        return any(r in t for r in risk_terms)
 
-    def risk_context(term: str) -> bool:
-        """Do NOT auto-remove — send to LLM"""
-        return any(risk in term for risk in risk_terms)
-
-    # =====================================================
-    # BIAS RULE EVALUATION (DYNAMIC)
-    # =====================================================
-    def apply_bias_rules(term: str) -> bool:
-        """
-        Returns True if term is clearly negative based on brand rules
-        """
-
+    def apply_bias(t):
         for rule in bias_rules:
-            rule = normalize(rule)
 
-            # simple semantic rule interpretation
-            if "cheap" in rule and "luxury" in positioning:
-                if "cheap" in term:
+            r = normalize(rule)
+
+            if "cheap" in r and "luxury" in positioning:
+                if "cheap" in t:
                     return True
 
-            if "free" in rule and intent_profile == "commercial":
-                if "free" in term:
-                    return True
-
-            if "used" in rule and "new" in positioning:
-                if "used" in term:
+            if "free" in r and intent_profile.get("commercial") == "high":
+                if "free" in t:
                     return True
 
         return False
 
-    # =====================================================
-    # MAIN LOOP
-    # =====================================================
     for term in terms:
 
         t = normalize(term)
 
-        # -------------------------------------------------
-        # 1. PROTECT SAFE ROOTS (NEVER REMOVE)
-        # -------------------------------------------------
-        if safe_root_match(t):
+        # 1. protect safe roots
+        if is_safe(t):
             remaining.append(term)
             continue
 
-        # -------------------------------------------------
-        # 2. RISK TERMS → ALWAYS PASS TO LLM
-        # -------------------------------------------------
-        if risk_context(t):
+        # 2. risk → LLM
+        if is_risk(t):
             remaining.append(term)
             continue
 
-        # -------------------------------------------------
-        # 3. LOW VALUE INTENT CHECK
-        # -------------------------------------------------
-        if violates_low_value(t):
+        # 3. low value → auto negative
+        if is_low_value(t):
             auto_negative.append(term)
             continue
 
-        # -------------------------------------------------
-        # 4. BRAND BIAS RULES
-        # -------------------------------------------------
-        if apply_bias_rules(t):
+        # 4. bias rules
+        if apply_bias(t):
             auto_negative.append(term)
             continue
 
-        # -------------------------------------------------
-        # 5. DEFAULT → LET AI DECIDE
-        # -------------------------------------------------
+        # 5. default
         remaining.append(term)
 
     return auto_negative, remaining
