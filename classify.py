@@ -12,7 +12,6 @@ It returns:
 No downstream module may override outputs.
 """
 
-
 # =====================================================
 # SAFE GENERATION WRAPPER
 # =====================================================
@@ -59,7 +58,7 @@ def extract_json(text: str):
 
 
 # =====================================================
-# CLASSIFICATION ENGINE
+# CLASSIFICATION ENGINE (IMPROVED STABILITY LAYER)
 # =====================================================
 def classify_terms_batch(
     model,
@@ -75,12 +74,23 @@ def classify_terms_batch(
 
     formatted_terms = "\n".join(f"- {t}" for t in batch_terms)
 
-    # IMPORTANT: USE EXTERNAL RULES (NOT HARDCODED)
+    # =====================================================
+    # ENHANCED PROMPT DISCIPLINE
+    # (key change: removes ambiguity clustering + enforces separation pressure)
+    # =====================================================
     prompt = f"""
-You are a PPC search term classifier.
+You are a high-precision PPC search term classifier.
 
-Return ONLY valid JSON:
+Your job is to assign each term to ONE category:
+- negative
+- review
+- positive
 
+Return ONLY valid JSON.
+
+========================
+OUTPUT FORMAT (STRICT)
+========================
 {{
   "negative": [],
   "review": [],
@@ -92,6 +102,27 @@ CLASSIFICATION RULES
 ========================
 
 {rules}
+
+========================
+CRITICAL BEHAVIOURAL FIXES
+========================
+
+1. DO NOT cluster uncertainty into REVIEW
+   - REVIEW is ONLY for true ambiguity between NEGATIVE and POSITIVE
+
+2. Avoid neutral scoring behaviour
+   - You must choose direction unless truly unclear
+
+3. NEGATIVE is NOT default in output
+   - It is only default in uncertainty, not behaviour
+
+4. REVIEW BAND RULE
+   - Use REVIEW ONLY if:
+     - term could realistically be BOTH commercial and non-commercial
+     - AND brand context does not clearly resolve it
+
+5. POSITIVE RULE
+   - If any strong commercial intent exists → prefer POSITIVE over REVIEW
 
 ========================
 BRAND CONTEXT
@@ -114,7 +145,7 @@ SEARCH TERMS
 {formatted_terms}
 
 ========================
-HARD OUTPUT REQUIREMENT
+HARD OUTPUT REQUIREMENTS
 ========================
 - Every term must appear in exactly ONE category
 - No explanations
@@ -126,7 +157,7 @@ HARD OUTPUT REQUIREMENT
     data = extract_json(raw)
 
     # =====================================================
-    # FAILSAFE
+    # FAILSAFE (NO LOSS GUARANTEE)
     # =====================================================
     if not data:
         return {
@@ -143,7 +174,8 @@ HARD OUTPUT REQUIREMENT
     data.setdefault("positive", [])
 
     # =====================================================
-    # LOSSLESS GUARANTEE
+    # LOSSLESS GUARANTEE (CRITICAL)
+    # ensures no silent drops
     # =====================================================
     classified = set(
         data["negative"]
@@ -153,13 +185,26 @@ HARD OUTPUT REQUIREMENT
 
     missing = [t for t in batch_terms if t not in classified]
 
+    # IMPORTANT CHANGE:
+    # missing terms go to REVIEW first, NOT NEGATIVE
+    # (prevents artificial bias inflation)
     if missing:
-        data["negative"].extend(missing)
+        data["review"].extend(missing)
 
     # =====================================================
-    # FINAL CLEANUP (DEDUPE SAFETY)
+    # DEDUPLICATION (ORDER PRESERVED)
     # =====================================================
     for k in ["negative", "review", "positive"]:
         data[k] = list(dict.fromkeys(data[k]))
+
+    # =====================================================
+    # FINAL STABILITY RULE
+    # prevent REVIEW explosion
+    # =====================================================
+    if len(data["review"]) > len(batch_terms) * 0.6:
+        # fallback safety: push weak review back to negative
+        overflow = data["review"][int(len(batch_terms)*0.6):]
+        data["review"] = data["review"][:int(len(batch_terms)*0.6)]
+        data["negative"].extend(overflow)
 
     return data
