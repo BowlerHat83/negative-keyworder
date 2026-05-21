@@ -5,7 +5,7 @@ from typing import List, Dict, Any
 
 
 # =====================================================
-# MODEL (FINAL EXPANSION ONLY)
+# MODEL (IDEALLY SHOULD BE IN APP.PY, BUT KEPT SAFE HERE)
 # =====================================================
 model = genai.GenerativeModel("gemini-2.5-flash")
 
@@ -41,18 +41,19 @@ def extract_json(text: str):
 
     try:
         return json.loads(text)
-    except:
-        m = re.search(r"\{.*\}", text, re.DOTALL)
-        if m:
+    except Exception:
+        match = re.search(r"\{.*\}", text, re.DOTALL)
+        if match:
             try:
-                return json.loads(m.group())
+                return json.loads(match.group())
             except:
                 return None
+
     return None
 
 
 # =====================================================
-# LAYER 6 — ROOT EXTRACTION
+# ROOT EXTRACTION (LAYER 6)
 # =====================================================
 def extract_roots_protected(
     negative_terms: List[str],
@@ -107,11 +108,11 @@ def extract_roots_protected(
             if w in intent_vocab:
                 roots.add(w)
 
-    return sorted(roots)
+    return sorted(list(roots))
 
 
 # =====================================================
-# LAYER 7 — FINAL EXPANSION ENGINE
+# FINAL EXPANSION ENGINE (LAYER 7)
 # =====================================================
 def final_classification(roots: list, brand_model: dict, set_error=None):
 
@@ -120,19 +121,18 @@ You are a PPC Negative Keyword Expansion Engine.
 
 Expand root negatives into PPC-ready outputs.
 
-INPUT ROOTS:
+ROOTS:
 {roots}
 
 BRAND CONTEXT:
-{json.dumps(brand_model)}
+{json.dumps(brand_model, indent=2)}
 
-OUTPUT JSON ONLY:
+Return ONLY valid JSON:
 
 {{
   "final_google_ads_negatives": [],
   "ai_negative_variations": [],
   "review_queue": [],
-  "positives": [],
   "brand_summary": ""
 }}
 
@@ -140,8 +140,7 @@ RULES:
 - expand ONLY from roots
 - no external invention
 - keep review minimal
-- maintain PPC realism
-- output valid JSON only
+- PPC-safe outputs only
 """
 
     raw = safe_generate(model, prompt, set_error=set_error)
@@ -152,19 +151,16 @@ RULES:
             "final_google_ads_negatives": [],
             "ai_negative_variations": [],
             "review_queue": [],
-            "positives": [],
             "brand_summary": "Error or empty response"
         }
 
-    for k in [
-        "final_google_ads_negatives",
-        "ai_negative_variations",
-        "review_queue",
-        "positives"
-    ]:
-        if k not in data or data[k] is None:
-            data[k] = []
+    # safety defaults
+    data.setdefault("final_google_ads_negatives", [])
+    data.setdefault("ai_negative_variations", [])
+    data.setdefault("review_queue", [])
+    data.setdefault("brand_summary", "")
 
+    # dedupe lists
     data["final_google_ads_negatives"] = list(set(data["final_google_ads_negatives"]))
     data["ai_negative_variations"] = list(set(data["ai_negative_variations"]))
 
@@ -172,36 +168,34 @@ RULES:
 
 
 # =====================================================
-# LAYER 8 — OUTPUT AGGREGATION
+# OUTPUT AGGREGATION (LAYER 8)
 # =====================================================
 def build_outputs(
     brand_model: Dict[str, Any],
     layer5_data: Dict[str, Any],
-    layer6_roots,
+    layer6_roots: List[str],
     layer7_data: Dict[str, Any]
 ) -> Dict[str, Any]:
 
     brand_summary = {
         "positioning": brand_model.get("positioning"),
         "price_positioning": brand_model.get("price_positioning"),
-        "intent_profile": brand_model.get("intent_profile", "unknown"),
+        "intent_profile": brand_model.get("intent_profile", {}),
         "core_offerings": brand_model.get("core_offerings", []),
         "safe_roots": brand_model.get("safe_roots", []),
         "risk_terms": brand_model.get("risk_terms", [])
     }
 
     review_queue = layer5_data.get("review", [])
-    negatives_with_roots = layer6_roots or []
     ai_variations = layer7_data.get("ai_negative_variations", [])
 
     raw_ads = layer7_data.get("final_google_ads_negatives", [])
-
     final_google_ads = "\n".join(sorted(set(raw_ads))) if isinstance(raw_ads, list) else str(raw_ads)
 
     return {
         "brand_summary": brand_summary,
         "review_queue": review_queue,
-        "negatives_with_roots": negatives_with_roots,
-        "ai_variations": ai_variations,
+        "roots": layer6_roots,
+        "ai_negative_variations": ai_variations,
         "final_google_ads": final_google_ads
     }
