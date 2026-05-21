@@ -124,10 +124,13 @@ target_keywords = None
 if campaign_type == "PMax":
     landing_pages_raw = st.text_area("Landing Pages (one per line)")
 
-elif campaign_type in ["Display", "Shopping", "Search"]:
+elif campaign_type in ["Display", "Shopping"]:
     landing_page = st.text_input("Landing Page URL")
     target_keywords = st.text_area("Target Keywords (optional for non-Search)")
 
+if campaign_type == "Search":
+    landing_pages_raw = st.text_area("Landing Page URL")
+    target_keywords = st.text_area("Target Keywords")
 
 # =====================================================
 # STAGE 1 — BUILD BRAND CONTEXT
